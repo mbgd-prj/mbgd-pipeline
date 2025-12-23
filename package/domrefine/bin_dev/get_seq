@@ -1,0 +1,39 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat GENE_LIST | $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('D:', \%OPT);
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+### Main ###
+my @geneset = ();
+-t and die $USAGE;
+while (<STDIN>) {
+    chomp;
+    my @f = split;
+    push @geneset, @f;
+}
+@geneset = uniq(@geneset);
+my @gene = get_genes_fused(\@geneset);
+
+my %seq = ();
+read_seq(\%seq, \@gene);
+for my $geneset (@geneset) {
+    my $seq = get_geneset_seq($geneset, \%seq);
+    if ($seq) {
+	print $seq;
+    }
+}

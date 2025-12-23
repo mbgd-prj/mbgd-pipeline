@@ -1,0 +1,28 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+!@ARGV and die $USAGE;
+my @CLUSTER = split(/[-,\s]/, "@ARGV");
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+print extract_dclst($TMP_INPUT, @CLUSTER);

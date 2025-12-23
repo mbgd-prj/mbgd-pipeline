@@ -1,0 +1,97 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use DB_File;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::General;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my %CLUSTER = ();
+my %DOMAIN = ();
+get_dclst_structure($TMP_INPUT, \%CLUSTER, \%DOMAIN);
+my @GENE = ();
+for my $geneset (keys %DOMAIN) {
+    my @gene = split(/\|/, $geneset);
+    push @GENE, @gene;
+}
+@GENE = uniq @GENE;
+
+my %SEQ = ();
+read_seq(\%SEQ, \@GENE);
+
+my $DCLST = "";
+for my $geneset (keys %DOMAIN) {
+    my @gene = split(/\|/, $geneset);
+    my @domain = sort {$a <=> $b} keys %{$DOMAIN{$geneset}};
+    my $offset = 0;
+    my $g = 0;
+    for (my $i=0; $i<@domain; $i++) {
+	my $cluster = $DOMAIN{$geneset}{$domain[$i]}{cluster};
+	my $begin = $DOMAIN{$geneset}{$domain[$i]}{begin} - $offset;
+	my $end = $DOMAIN{$geneset}{$domain[$i]}{end} - $offset;
+
+	my $gene_length = get_gene_length(\%SEQ, $gene[$g]);
+	if ($gene_length < $end) {
+	    $offset += $gene_length;
+	    $g ++;
+	    $begin = $DOMAIN{$geneset}{$domain[$i]}{begin} - $offset;
+	    $end = $DOMAIN{$geneset}{$domain[$i]}{end} - $offset;
+	}
+
+	$DCLST .= "$cluster " . $gene[$g] . " " . $domain[$i] . " $begin $end\n";
+
+    }
+}
+
+$DCLST = renumber_domains_without_concat($DCLST);
+print $DCLST;
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+
+sub renumber_domains_without_concat {
+    my ($dclst) = @_;
+
+    # parse
+    my %member = ();
+    read_cluster_members($dclst, \%member);
+
+    # re-number
+    my %new_domain_no = ();
+    assign_new_domain_number(\%member, \%new_domain_no);
+
+    # output
+    my $out = "";
+    for my $cluster (sort {$a<=>$b} keys %member) {
+	for my $gene (sort {$a cmp $b} keys %{$member{$cluster}}) {
+	    for my $domain (sort {$a <=> $b} keys %{$member{$cluster}{$gene}}) {
+		my $start = $member{$cluster}{$gene}{$domain}{start};
+		my $end = $member{$cluster}{$gene}{$domain}{end};
+		my $new_domain_no = $new_domain_no{$gene}{$domain};
+		$out .= "$cluster $gene $new_domain_no $start $end\n";
+	    }
+	}
+    }
+
+    return $out;
+}

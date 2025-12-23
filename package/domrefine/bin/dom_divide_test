@@ -1,0 +1,209 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-r: align by region
+-R: align only region
+-T: output rooted tree
+";
+# -D SEQ_DB
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Tree;
+
+### Settings ###
+my %OPT;
+getopts('rRTlD:', \%OPT);
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+my $TMP_ALIGNMENT_ERR = define_tmp_file("$PROGRAM.alignment.err");
+my $TMP_TREE = define_tmp_file("$PROGRAM.ph");
+my $TMP_TREE_LOG = define_tmp_file("$PROGRAM.tree_log");
+my $TMP_DIVIDE = define_tmp_file("$PROGRAM.divide");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file($TMP_ALIGNMENT_ERR);
+    remove_tmp_file($TMP_TREE);
+    remove_tmp_file($TMP_TREE_LOG);
+    remove_tmp_file($TMP_DIVIDE);
+}
+
+### Main ###
+my $start_time = time;
+
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my @gene = ();
+create_alignment($TMP_INPUT, \@gene, $TMP_ALIGNMENT, region => $OPT{r}, REGION => $OPT{R});
+
+phylogenetic_tree($TMP_ALIGNMENT, $TMP_TREE, $TMP_TREE_LOG);
+
+my $TREE = new_tree($TMP_TREE);
+my @NODES = $TREE->get_root_node->get_all_Descendents;
+
+my @SUPPORT_VALUE;
+save_support_values(\$TREE, \@SUPPORT_VALUE);
+
+if ($OPT{l}) {
+    put_node_labels(\$TREE);
+    print_tree(\$TREE);
+    exit;
+}
+
+my %GENE_SPECIES = ();
+get_gene_species($TMP_INPUT);
+
+### Set point to divide
+my $IDX;
+if (@ARGV) {
+    $IDX = $ARGV[0];
+} else {
+    $IDX = find_best_division();
+    if (! defined $IDX) {
+	print STDERR "cannot divide\n";
+	my $end_time = time;
+	printf STDERR "divide: %d sec\n", $end_time - $start_time;
+	exit;
+    }
+}
+
+if ($OPT{T}) {
+    # output tree
+    my_reroot_at_midpoint(\$TREE, $NODES[$IDX]);
+    put_support_values(\$TREE, \@SUPPORT_VALUE);
+    print_tree(\$TREE);
+} else {
+    # members of a sub-cluster
+    my ($sp_overlap, $r_leaves1, $r_leaves2, $detail) = check_species_overlap(\%GENE_SPECIES, $TMP_TREE, $IDX);
+    my %sub_cluster_domain;
+    my %sub_cluster_gene;
+    for my $leaf_name (@{$r_leaves1}) {
+	if ($leaf_name =~ /^(\d+)_([A-Za-z0-9]+)_(\S+)$/) {
+	    my ($domain, $sp, $gene) = ($1, $2, $3);
+	    $sub_cluster_domain{"$sp:$gene"}{$domain} = 1;
+	} elsif ($leaf_name =~ /^([A-Za-z0-9]+)_(\S+)$/) {
+	    my ($sp, $gene) = ($1, $2, $3);
+	    $sub_cluster_gene{"$sp:$gene"} = 1;
+	} else {
+	    die $leaf_name;
+	}
+    }
+    # output sub-clusters
+    open(TMP_INPUT, $TMP_INPUT) || die;
+    if (%sub_cluster_domain and %sub_cluster_gene) {
+	die;
+    }
+    while (<TMP_INPUT>) {
+	my ($cluster, $gene, $domain) = split;
+	if (%sub_cluster_gene) {
+	    if ($sub_cluster_gene{$gene}) {
+		s/^(\S+)/${1}d/;
+	    } else {
+		s/^(\S+)/${1}D/;
+	    }
+	} elsif (%sub_cluster_domain) {
+	    if ($sub_cluster_domain{$gene}{$domain}) {
+		s/^(\S+)/${1}d/;
+	    } else {
+		s/^(\S+)/${1}D/;
+	    }
+	}
+	print;
+    }
+    close(TMP_INPUT);
+}
+
+my $end_time = time;
+printf STDERR "divide: %d sec\n", $end_time - $start_time;
+
+################################################################################
+### Function ###################################################################
+################################################################################
+
+sub find_best_division {
+
+    my @height = ();
+    open(TMP_DIVIDE, ">$TMP_DIVIDE") || die;;
+    for (my $i=0; $i<@NODES; $i++) {
+	if ($NODES[$i]->branch_length > 0) {
+	    my $node1 = $NODES[$i]->internal_id;
+	    my $node2 = $NODES[$i]->ancestor->internal_id;
+	    my ($sp_overlap, $r_leaves1, $r_leaves2, $detail, $height) = check_species_overlap(\%GENE_SPECIES, $TMP_TREE, $i, $node1, $node2);
+	    print TMP_DIVIDE $detail;
+	    push @height, $height;
+	} else {
+	    # print STDERR "i=$i\tnode=", $NODES[$i]->to_string, "\n"; # print for debug
+	}
+    }
+    close(TMP_DIVIDE);
+    my $min_height = min(@height);
+
+    my $i_best;
+
+    my @line = `cat $TMP_DIVIDE | sort -t '\t' -k4,4 -k5,5gr -k3,3r`; # sort by tree_height(4), species_overlap(5), root_length(3)
+    for my $line (@line) {
+	if ($line =~ /^i=(\d+).*b=(\S+?),\sl= (\S+), .*l1= (\S+), l2= (\S+), .*.log2.l1.l2..= (\S+),.*h= (\S+), .*o_sp=.*?=\s*(\S+?)\s*, o_sp_part=\s*(.*?),\s/) {
+	    my ($i, $support_value, $len, $len1, $len2, $log_ratio_len, $height, $sp_overlap, $sp_overlap_part) = ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+	    if (! defined $i_best) {
+		$i_best = $i; # choose the first candidate
+	    }
+	    # add h_relative
+	    my $h_relative = 0;
+	    if ($min_height) {
+		$h_relative = $height/$min_height;
+	    }
+	    $h_relative = sprintf("%.5f", $h_relative);
+	    $line =~ s/, n= /, h_rel= $h_relative, n= /;
+	    # output division candidates to STDERR
+	    print STDERR $line;
+	}	
+    }
+
+    return $i_best;
+}
+
+sub get_gene_species {
+    my ($tmp_input) = @_;
+    open(TMP, "$tmp_input") || die "$!";
+    while (<TMP>) {
+        chomp;
+        my @f = split(/\t/, $_, -1);
+        if (@f) {
+            my ($cluster, $member) = split(" ", $f[0]);
+            if ($member =~ /^(\S+):(\S+)$/) {
+                my ($sp, $gene) = ($1, $2);
+                $GENE_SPECIES{"$sp:$gene"}{$sp} = 1;
+                if (@f == 2) {
+                    if ($ENV{DOMREFINE_PRECLUST_INFO}) {
+                        my @expanded_species = split(" ", $f[1]);
+                        for my $e (@expanded_species) {
+                            $GENE_SPECIES{"$sp:$gene"}{$e} = 1;
+                        }
+                    } else {
+                        die;
+                    }
+                }
+                if (@f > 2) {
+                    die;
+                }
+            } else {
+                die;
+            }
+        } else {
+            die;
+        }
+    }
+    close(TMP);
+}

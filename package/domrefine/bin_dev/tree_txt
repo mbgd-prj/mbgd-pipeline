@@ -1,0 +1,27 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Tree;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my $TREE = new_tree($TMP_INPUT);
+print tree_children($TREE->get_root_node, 0);

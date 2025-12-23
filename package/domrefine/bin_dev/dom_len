@@ -1,0 +1,25 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-c CLUSTER
+";
+
+my %OPT;
+getopts('c:', \%OPT);
+
+!@ARGV && -t and die $USAGE;
+while (<>) {
+    chomp;
+    my ($cluster, $gene, $domain, $begin, $end) = split;
+    if ($OPT{c}) {
+	if ($OPT{c} ne $cluster) {
+	    next;
+	}
+    }
+    my $len = $end - $begin + 1;
+    print "$_\t$len\n";
+}

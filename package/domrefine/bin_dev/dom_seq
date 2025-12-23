@@ -1,0 +1,43 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-D: domain by domain
+-f: fast (by mysql)
+";
+
+use DomRefine::Read;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('fd:D', \%OPT);
+
+if ($OPT{d}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{d};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_SEQ = define_tmp_file("$PROGRAM.get_seq");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_SEQ);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+if ($OPT{D}) {
+    read_dclst_to_seq_file_domain($TMP_INPUT, $TMP_SEQ);
+} elsif ($OPT{f}) {
+    my $dbh = get_dbh();
+    my @geneset = read_dclst_geneset($TMP_INPUT);
+    get_seq_fast(\@geneset, $TMP_SEQ, $dbh);
+} else {
+    read_dclst_to_seq_file($TMP_INPUT, $TMP_SEQ);
+}
+system "cat $TMP_SEQ";

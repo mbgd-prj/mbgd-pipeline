@@ -1,0 +1,37 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: echo CLUSTER .. | $PROGRAM CLUSTER_FILE
+-v: extract complement
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('v', \%OPT);
+
+if (@ARGV != 1) {
+    print STDERR $USAGE;
+    exit 1;
+}
+my $FILE = "$ARGV[0]";
+
+### Main ###
+-t and die $USAGE;
+
+my @CLUSTER = ();
+while (<STDIN>) {
+    chomp;
+    my @cluster = split(/[-,\s]/, $_);
+    push @CLUSTER, @cluster;
+}
+
+if ($OPT{v}) {
+    print extract_dclst_compl($FILE, @CLUSTER);
+} else {
+    print extract_dclst($FILE, @CLUSTER);
+}

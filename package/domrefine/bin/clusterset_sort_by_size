@@ -1,0 +1,72 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER_SET | $PROGRAM CLUSTER_SIZE
+-n N: wrap clusters upto this size (default: 100)
+";
+
+my %OPT;
+getopts('sn:', \%OPT);
+
+if (@ARGV != 1) {
+    print STDERR $USAGE;
+    exit 1;
+}
+
+my %CLUSTER_SIZE = ();
+open(SIZE, $ARGV[0]) || die;
+while (<SIZE>) {
+    chomp;
+    my ($cluster, $size) = split;
+    $CLUSTER_SIZE{$cluster} = $size;
+}
+close(SIZE);
+
+my @LINE = <STDIN>;
+chomp(@LINE);
+my %LINE_SIZE = ();
+for my $line (@LINE) {
+    # decompose line to clusters
+    if ($line =~ /\s/) {
+	print STDERR "ERROR: invalid line $line\n";
+	print join("\n", @LINE), "\n";
+	exit;
+    }
+    my @cluster = split(/[- ,]/, $line);
+    # summation of cluster sizes
+    my $size = 0;
+    for my $cluster (@cluster) {
+	if (! defined $CLUSTER_SIZE{$cluster}) {
+	    print STDERR "ERROR: cluster size of $cluster is unknown\n";
+	    print join("\n", @LINE), "\n";
+	    exit;
+	}
+	$size += $CLUSTER_SIZE{$cluster};
+    }
+    $LINE_SIZE{$line} = $size;
+}
+
+my @LINE_SORTED = sort { $LINE_SIZE{$a} <=> $LINE_SIZE{$b} } @LINE;
+if ($OPT{n}) {
+    my @MULTI_LINE = ();
+    my $SUM_OF_SIZE = 0;
+    my @OUT = ();
+    for my $line (@LINE_SORTED) {
+	if ($SUM_OF_SIZE > $OPT{n}) {
+	    push @OUT, "@MULTI_LINE\n";
+	    @MULTI_LINE = ();
+	    $SUM_OF_SIZE = 0;
+	}
+	push @MULTI_LINE, $line;
+	$SUM_OF_SIZE += $LINE_SIZE{$line};
+    }
+    if (@MULTI_LINE) {
+	push @OUT, "@MULTI_LINE\n";
+    }
+    print reverse(@OUT);
+} else {
+    print join("\n", reverse(@LINE_SORTED)), "\n";
+}

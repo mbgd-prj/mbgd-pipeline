@@ -1,0 +1,83 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat DIVIDE_SUMMARY | $PROGRAM -i INPUT_DOM_TABLE -o SUB_DIR
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('i:o:', \%OPT);
+
+my $INPUT_DOM_TABLE;
+if ($OPT{i}) {
+    $INPUT_DOM_TABLE = "$OPT{i}";
+} else {
+    die;
+}
+my $SUB_DIR;
+if ($OPT{o}) {
+    $SUB_DIR = "$OPT{o}";
+} else {
+    die;
+}
+
+### Read input ###
+my %CLUSTER_MEMBERS = ();
+open(INPUT_DOM_TABLE, $INPUT_DOM_TABLE) || die;
+while (my $line = <INPUT_DOM_TABLE>) {
+    chomp($line);
+    if ($line =~ /^(\S+)\s(\S.*)/) {
+	my ($cluster, $member) = ($1, $2);
+	if (! defined $CLUSTER_MEMBERS{$cluster}) {
+	    $CLUSTER_MEMBERS{$cluster} = "$member\n";
+	} else {
+	    $CLUSTER_MEMBERS{$cluster} .= "$member\n";
+	}
+    } else {
+	print STDERR "invalid line: $line";
+    }
+}
+close(INPUT_DOM_TABLE);
+
+### Main ###
+-t and die $USAGE;
+while (<STDIN>) {
+    my ($cluster, $point) = split;
+    if ($point =~ /^i(\d+)$/) {
+	my $i = $1;
+	my $dclst_to_replace = `cat $SUB_DIR/$cluster.out`;
+	delete $CLUSTER_MEMBERS{$cluster};
+	# Output divided clusters
+	print $dclst_to_replace;
+	# Output log
+	print STDERR "Executing divide $cluster $point\n";
+	chomp($dclst_to_replace);
+	my @member = split("\n", $dclst_to_replace);
+	my %check = ();
+	for my $member (@member) {
+	    my ($c) = split(/\s+/, $member);
+	    $check{$c} = 1;
+	}
+	my @c = sort { $a cmp $b } keys(%check);
+	for my $c (@c) {
+	    print STDERR "created $c\n";
+	}
+    } else {
+	die $_;
+    }
+}
+
+### Output the unchanged clusters ###
+for my $cluster (sort { $a cmp $b } keys(%CLUSTER_MEMBERS)) {
+    my $members = $CLUSTER_MEMBERS{$cluster};
+    chomp($members);
+    my @member = split("\n", $members);
+    for my $member (@member) {
+	print "$cluster $member\n";
+    }
+}

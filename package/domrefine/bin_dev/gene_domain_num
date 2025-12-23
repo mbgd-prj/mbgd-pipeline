@@ -1,0 +1,26 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+my %OPT;
+getopts('', \%OPT);
+
+!@ARGV and die $USAGE;
+my @CLUSTER = @ARGV;
+
+-t and die $USAGE;
+while (<STDIN>) {
+    my ($gene) = split;
+    my @num = ();
+    for my $cluster (@CLUSTER) {
+	my ($num) = `cat $cluster | grep -w $gene | wc -l`;
+	chomp($num);
+	push @num, $num;
+    }
+    print $gene, "\t",join("\t", @num), "\t", $num[0] - $num[1], "\n";
+}

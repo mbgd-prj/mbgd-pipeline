@@ -1,0 +1,3 @@
+#!/bin/sh
+dir=`dirname $0`
+java -cp $dir/../lib/CompareMap.jar cgdp.corealign.CoreAlign $*

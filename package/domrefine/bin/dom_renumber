@@ -1,0 +1,34 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-d: domain IDs (increasing order of position)
+-c: cluster IDs (decreasing order of size)
+";
+
+use DomRefine::Read;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('dc', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+if ($OPT{d}) {
+    print renumber_domain($TMP_INPUT);
+} elsif ($OPT{c}) {
+    print renumber_cluster($DCLST);
+} else {
+    print renumber_concat_domains($DCLST);
+}

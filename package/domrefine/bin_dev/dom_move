@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use POSIX;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM [CLUSTER_SET]
+-a: only adjacent
+";
+
+use DomRefine::Read;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('r2a', \%OPT);
+
+my $sort_option = "";
+if ($OPT{r}) {
+    $sort_option = "-r";
+}
+
+my $flg_uniq = 0;
+if ($OPT{2}) {
+    $flg_uniq = 1;
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+for my $cluster (get_clusters($TMP_INPUT, $sort_option)) {
+    $DCLST = partial_move($DCLST, $cluster, $flg_uniq, $OPT{a});
+}
+print $DCLST;

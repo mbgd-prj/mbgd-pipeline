@@ -1,0 +1,152 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use POSIX;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM j
+";
+# -e GAP_EXT
+# -o GAP_OPEN
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::General;
+use DomRefine::Score;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('v:re:o:', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+}
+
+if (defined $OPT{o}) {
+    set_open_gap_penalty($OPT{o});
+}
+if (defined $OPT{e}) {
+    set_extention_gap_penalty($OPT{e});
+}
+
+$| = 1;
+
+### Main ###
+my $start_time = time;
+
+@ARGV != 1 and die $USAGE;
+my ($j) = @ARGV;
+print STDERR "j_boundary=$j\n";
+
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my %domain = ();
+my %cluster = ();
+get_dclst_structure($TMP_INPUT, \%cluster, \%domain);
+my @gene = ();
+create_alignment($TMP_INPUT, \@gene, $TMP_ALIGNMENT, region => $OPT{r});
+my @a =();
+read_alignment($TMP_ALIGNMENT, \@a);
+my @get_pos = ();
+my @get_j = ();
+create_get_pos_from_a(\@a, \@get_pos, \@get_j);
+my %gene_idx;
+get_gene_idx(\@gene, \%gene_idx);
+
+# BUG?: not a simple procedure just to get head and tail cluster
+my %cluster_adjacency = ();
+get_adjacency_information(\%domain, \%cluster_adjacency);
+my ($HEAD_CLUSTER, $TAIL_CLUSTER) = extract_most_adjacent_cluster_pair(\%cluster_adjacency);
+if (! defined $TAIL_CLUSTER) {
+    die;
+}
+print STDERR "cluster_adjacency [$HEAD_CLUSTER] -> [$TAIL_CLUSTER]\n";
+if ($HEAD_CLUSTER eq $TAIL_CLUSTER) {
+    print STDERR "could not find boundary\n";
+    system "cat $TMP_INPUT";
+    my $end_time = time;
+    printf STDERR "create_boundary: %d sec\n", $end_time - $start_time;
+    exit;
+}
+
+### optimize
+for my $gene (sort {$a cmp $b} keys %domain) {
+    for my $domain (keys %{$domain{$gene}}) {
+	if ($domain{$gene}{$domain-1} and
+	    $domain{$gene}{$domain-1}{cluster} ne $domain{$gene}{$domain}{cluster}) { # for tail domain
+	    # not modified
+	} elsif ($cluster{$HEAD_CLUSTER}{$gene} and $cluster{$TAIL_CLUSTER}{$gene}) { # for other divided domain
+	    print STDERR "skip: $gene $domain\n";
+	} else {
+	    split_domain_or_not(\%domain, \%cluster, \@a, \@get_pos, $gene, $domain, $HEAD_CLUSTER, $TAIL_CLUSTER, \%gene_idx, $j);
+	}
+    }
+}
+
+output_domains(\%domain);
+
+my $end_time = time;
+printf STDERR "create_boundary: %d sec\n", $end_time - $start_time;
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub split_domain_or_not {
+    my ($r_domain, $r_cluster, $r_a, $r_get_pos, $gene, $domain, $head_cluster, $tail_cluster, $r_gene_idx, $j) = @_;
+
+    my $i = ${$r_gene_idx}{$gene};
+
+    print STDERR "\ntry to split $gene $domain\n";
+    my ($current_score) = dsp_score_dclst(get_dclst_of_domain($r_domain), $TMP_ALIGNMENT, region => $OPT{r}, i => $i);
+
+    ### backup original domain
+    my $begin = ${$r_domain}{$gene}{$domain}{begin};
+    my $end = ${$r_domain}{$gene}{$domain}{end};
+    my $cluster = ${$r_domain}{$gene}{$domain}{cluster};
+
+    ### Split domain
+    my $len = 1;
+    delete ${$r_domain}{$gene}{$domain};
+    ${$r_domain}{$gene}{$domain-0.5}{cluster} = $head_cluster;
+    ${$r_domain}{$gene}{$domain-0.5}{begin} = $begin;
+    ${$r_domain}{$gene}{$domain-0.5}{end} = $begin+$len-1;
+    ${$r_domain}{$gene}{$domain+0.5}{cluster} = $tail_cluster;
+    ${$r_domain}{$gene}{$domain+0.5}{begin} = $begin+$len;
+    ${$r_domain}{$gene}{$domain+0.5}{end} = $end;
+
+    ${$r_cluster}{$HEAD_CLUSTER}{$gene} = 1;
+    ${$r_cluster}{$TAIL_CLUSTER}{$gene} = 1;
+
+    my $pos = boundary_move_gene($r_a, $r_domain, $r_get_pos, $i, $gene, $domain+0.5, $j);
+
+    ### check score
+    if ($pos) {
+	my ($modified_score) = dsp_score_dclst(get_dclst_of_domain($r_domain), $TMP_ALIGNMENT, region => $OPT{r}, i => $i);
+	if ($modified_score > $current_score) {
+	    print STDERR "split $gene $domain: $modified_score > $current_score\n";
+	    return $modified_score;
+	} else {
+	    print STDERR "did not split $gene $domain: $modified_score <= $current_score\n";
+	}
+    } else {
+	print STDERR "did not split $gene $domain\n";
+    }
+
+    # recover original domain
+    delete ${$r_domain}{$gene}{$domain-0.5};
+    delete ${$r_domain}{$gene}{$domain+0.5};
+    ${$r_domain}{$gene}{$domain}{cluster} = $cluster;
+    ${$r_domain}{$gene}{$domain}{begin} = $begin;
+    ${$r_domain}{$gene}{$domain}{end} = $end;
+    
+    delete ${$r_cluster}{$HEAD_CLUSTER}{$gene};
+    delete ${$r_cluster}{$TAIL_CLUSTER}{$gene};
+    ${$r_cluster}{$cluster}{$gene} = 1;
+    return $current_score;
+}

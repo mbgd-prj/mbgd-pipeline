@@ -1,0 +1,32 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM DOM_TABLE1 DOM_TABLE2
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_SORTED1 = define_tmp_file("$PROGRAM.sorted1");
+my $TMP_SORTED2 = define_tmp_file("$PROGRAM.sorted2");
+END {
+    remove_tmp_file($TMP_SORTED1);
+    remove_tmp_file($TMP_SORTED2);
+}
+
+if (@ARGV != 2) {
+    print STDERR $USAGE;
+    exit 1;
+}
+my ($FILE1, $FILE2) = @ARGV;
+
+### Main ###
+system "sort $FILE1 > $TMP_SORTED1";
+system "sort $FILE2 > $TMP_SORTED2";
+system "diff $TMP_SORTED1 $TMP_SORTED2";

@@ -1,0 +1,191 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('v:', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+
+save_stdin($TMP_INPUT);
+refine($TMP_INPUT, verbose => $OPT{v});
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub refine {
+    my ($dclst_table_file, %opt) = @_;
+
+    my $verbose = $opt{verbose} || 2;
+    # 1: low
+    # 2: medium
+    # 3: high
+    # 4: extra
+    $| = 1;
+    
+    my $current_score = 0;
+
+    my @cluster = get_clusters($dclst_table_file);
+
+    $verbose>=2 and print STDERR "Create alignment matrix..\n";
+    my @a_gene = ();
+    my @a_a = ();
+    my @a_b = ();
+    my @a_d = ();
+    my @h_gene_idx = ();
+    my @h_domain = ();
+    my @h_p = ();
+    my @a_get_j = ();
+    my %domain_total = ();
+    my %cluster_total = ();
+    for (my $c=0; $c<@cluster; $c++) {
+	$verbose>=2 and print STDERR "[cluster $cluster[$c]]\n";
+	($a_gene[$c], $a_a[$c], $a_b[$c], $a_d[$c]) = ([], [], [], []);
+	%{$h_gene_idx[$c]} = ();
+	%{$h_domain[$c]} = ();
+	%{$h_p[$c]} = ();
+	$a_get_j[$c] = [];
+	save_contents(extract_dclst($dclst_table_file, $cluster[$c]), $TMP_REFINE_PL_DCLST);
+	my ($n, $m) = get_alignment_structure($TMP_REFINE_PL_DCLST, $a_gene[$c], $a_a[$c], $a_b[$c], $h_p[$c]);
+	get_gene_idx($a_gene[$c], $h_gene_idx[$c]);
+	my %cluster = ();
+	get_dclst_structure($TMP_REFINE_PL_DCLST, \%cluster, $h_domain[$c]);
+	get_dclst_structure($TMP_REFINE_PL_DCLST, \%cluster_total, \%domain_total);
+	my @d = (); 
+	map_domains($a_gene[$c], $h_domain[$c], $a_b[$c], $a_d[$c]);
+
+	print STDERR " matrix: n=$n m=$m\n";
+	create_get_j($a_b[$c], $a_get_j[$c]);
+	$current_score += calculate_sp_score($a_a[$c], $a_b[$c], $a_d[$c]);
+    }
+    
+    $verbose>=2 and print STDERR "Optimize score..\n";
+    for my $dclst_line (`cat $dclst_table_file`) {
+	my ($cluster, $gene, @domain_info) = split(/\s+/, $dclst_line);
+	unless (@domain_info and @domain_info % 3 == 0) {
+	    die;
+	}
+	for (my $i=0; $i<@domain_info; $i+=3) {
+	    my $domain = $domain_info[$i];
+	    if ($domain_total{$gene}{$domain-1} and
+		$domain_total{$gene}{$domain-1}{cluster} != $domain_total{$gene}{$domain}{cluster}
+		) {
+		my $score_gain = optimize_one_boundary(\@a_a, \@a_b, \@a_d, \@h_gene_idx, \@h_domain, $gene, $domain, \@a_get_j, \%domain_total, $verbose, \$current_score);
+		$current_score += $score_gain;
+	    }
+	}
+    }
+    if ($verbose>=2) {
+	my $recalculated_score = calculate_sp_score_of_clusters(\@a_a, \@a_b, \@a_d);
+	if ($recalculated_score != $current_score) {
+	    print STDERR "ERROR: obtained inconsistent score $recalculated_score != $current_score\n";
+	}
+    }
+
+    output_clusters(\%cluster_total, \%domain_total);
+}
+
+sub optimize_one_boundary {
+    my ($r_a_a, $r_a_b, $r_a_d, $r_h_gene_idx, $r_h_domain, $gene, $domain, $r_a_get_j, $r_domain_total, $verbose, $r_current_score) = @_;
+
+    my $old_begin_pos = ${$r_domain_total}{$gene}{$domain}{begin};
+    my $old_end_pos = ${$r_domain_total}{$gene}{$domain-1}{end};
+    my $candidate_pos_min = ${$r_domain_total}{$gene}{$domain-1}{begin}+1;
+    my $candidate_pos_max = ${$r_domain_total}{$gene}{$domain}{end};
+
+    my $score_gain = 0;
+    my ($max_gain, $max_pos) = (0, $old_begin_pos);
+
+    $verbose>=2 and print STDERR "\n$gene($domain) begin_pos_candidates: $candidate_pos_min .. $candidate_pos_max\n";
+    if ($old_end_pos + 1 != $old_begin_pos) {
+	print STDERR "WARNING: previous domain end_pos $old_end_pos should be adjusted to this domain begin_pos $old_begin_pos\n";
+	my $score_diff = shift_domain_boundary($r_a_a, $r_a_b, $r_a_d, $r_h_gene_idx, $r_h_domain, $gene, $domain, $old_begin_pos, $r_a_get_j, $r_domain_total, $verbose);
+	${$r_current_score} += $score_diff;
+	$verbose>=3 and print STDERR "\n";
+    }
+    for (my $new_pos=$candidate_pos_min; $new_pos<=$candidate_pos_max; $new_pos++) {
+	$score_gain += shift_domain_boundary($r_a_a, $r_a_b, $r_a_d, $r_h_gene_idx, $r_h_domain, $gene, $domain, $new_pos, $r_a_get_j, $r_domain_total, $verbose);
+	if ($new_pos == $candidate_pos_min) {
+	    ($max_gain, $max_pos) = ($score_gain, $new_pos);
+	}
+	if ($score_gain > $max_gain) {
+	    ($max_gain, $max_pos) = ($score_gain, $new_pos);
+	}
+	$verbose>=3 and print STDERR "\tcumulative_gain: $score_gain\tmax_pos:$max_pos\n";
+	$verbose>=4 and print STDERR "quick_score:", ${$r_current_score} + $score_gain, "\n";
+	$verbose>=4 and print STDERR "true_score: ", calculate_sp_score_of_clusters($r_a_a, $r_a_b, $r_a_d), "\n";
+    }
+
+    $score_gain += shift_domain_boundary($r_a_a, $r_a_b, $r_a_d, $r_h_gene_idx, $r_h_domain, $gene, $domain, $max_pos, $r_a_get_j, $r_domain_total, $verbose);
+    $verbose>=3 and print STDERR "\tcumulative_gain: $score_gain\n";
+    $verbose>=2 and print STDERR "begin_pos_modified: $old_begin_pos -> $max_pos\tscore_gain: $score_gain\n";
+    
+    return $score_gain;
+}
+
+sub shift_domain_boundary {
+    my ($r_a_a, $r_a_b, $r_a_d, $r_h_gene_idx, $r_h_domain, $gene, $domain, $new_pos, $r_a_get_j, $r_domain_total, $verbose) = @_;
+
+    my $old_begin_pos = ${$r_domain_total}{$gene}{$domain}{begin};
+    my $old_end_pos = ${$r_domain_total}{$gene}{$domain}{end};
+    $verbose>=3 and print STDERR "begin_pos: $old_begin_pos -> $new_pos\t";
+    ### some bug in positions??
+    my $from_pos = min($old_end_pos, $old_begin_pos-1, $new_pos-1);
+    my $to_pos = max($old_end_pos, $old_begin_pos, $new_pos);
+    my @cluster_idx = get_related_cluster_idx($gene, $domain, $r_h_domain);
+
+    my $score_local_old = calculate_scores_local_sum_light($r_a_a, $r_a_b, $r_a_d, $gene, $r_h_gene_idx, $from_pos, $to_pos, $r_a_get_j, @cluster_idx);
+    
+    $verbose>=3 and print STDERR "modified_cluster:";
+    # shift domain boundary
+    ${$r_domain_total}{$gene}{$domain}{begin} = $new_pos;
+    ${$r_domain_total}{$gene}{$domain-1}{end} = $new_pos - 1;
+    
+    for my $c (@cluster_idx) {
+	$verbose>=3 and print STDERR " $c";
+	my @domain_n = keys %{${${$r_h_domain}[$c]}{$gene}};
+	for my $domain_n (@domain_n) {
+	    if ($domain_n == $domain - 1 || $domain_n == $domain) {
+		my ($begin_pos, $end_pos) = (${$r_domain_total}{$gene}{$domain_n}{begin}, ${$r_domain_total}{$gene}{$domain_n}{end});
+		my $i = ${${$r_h_gene_idx}[$c]}{$gene};
+		update_domain(${$r_a_d}[$c][$i], $from_pos, $to_pos, $begin_pos, $end_pos, ${$r_a_get_j}[$c][$i]);
+	    }
+	}
+    }
+
+    my $score_local_new = calculate_scores_local_sum_light($r_a_a, $r_a_b, $r_a_d, $gene, $r_h_gene_idx, $from_pos, $to_pos, $r_a_get_j, @cluster_idx);
+
+    my $local_gain = $score_local_new - $score_local_old;
+    $verbose>=4 and print STDERR "\tlocal_score:$score_local_old -> $score_local_new";
+    $verbose>=3 and print STDERR "\tlocal_gain: $local_gain\t";
+    return $local_gain;
+}
+
+sub get_related_cluster_idx {
+    my ($gene, $domain, $r_h_domain) = @_;
+    
+    my @cluster_idx = ();
+    for (my $c=0; $c<@{$r_h_domain}; $c++) {
+	if (${${$r_h_domain}[$c]}{$gene}{$domain} or ${${$r_h_domain}[$c]}{$gene}{$domain-1}) {
+	    push @cluster_idx, $c;
+	}
+    }
+
+    return @cluster_idx;
+}

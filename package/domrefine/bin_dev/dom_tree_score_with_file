@@ -1,0 +1,297 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat cluster.dom_table | $PROGRAM
+        $PROGRAM all.dom_table cluster_id
+-o 11: output tree in o11 format
+-N: Newick
+-v: verbose
+-u: unset DOMREFINE_READ_ALIGNMENT_CACHE
+-U: unset DOMREFINE_WRITE_ALIGNMENT_CACHE
+-f Newick_cache_file
+-S: do not calculate score
+";
+# -d SEQ_DB
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Score;
+use DomRefine::Tree;
+
+### Settings ###
+my %OPT;
+getopts('o:NvuUf:Sd:', \%OPT);
+
+if ($OPT{u}) {
+    $ENV{DOMREFINE_READ_ALIGNMENT_CACHE} = 0;
+}
+if ($OPT{U}) {
+    $ENV{DOMREFINE_WRITE_ALIGNMENT_CACHE} = 0;
+}
+
+if ($OPT{d}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{d};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+my $TMP_ALIGNMENT_ERR = define_tmp_file("$PROGRAM.alignment.err");
+my $TMP_TREE = define_tmp_file("$PROGRAM.newick");
+my $TMP_TREE_LOG = define_tmp_file("$PROGRAM.tree.log");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file($TMP_ALIGNMENT_ERR);
+    remove_tmp_file($TMP_TREE);
+    remove_tmp_file($TMP_TREE_LOG);
+}
+
+if ($OPT{f}) {
+    $TMP_TREE = $OPT{f};
+}
+
+### Main ###
+my $START_TIME = time;
+
+my $CLUSTER_ID;
+if (! -t) {
+    save_stdin($TMP_INPUT);
+    $CLUSTER_ID = 0;
+} elsif (@ARGV == 2) {
+    my $all_dom_table;
+    ($all_dom_table, $CLUSTER_ID) =  @ARGV;
+    system  "cat $all_dom_table | grep '^$CLUSTER_ID ' > $TMP_INPUT";
+} else {
+    print STDERR $USAGE;
+    exit 1;
+}
+
+print_cluster_tree($TMP_INPUT, $CLUSTER_ID, $TMP_ALIGNMENT, $TMP_TREE, $TMP_TREE_LOG, %OPT);
+
+my $END_TIME = time;
+printf STDERR "dom_tree_score: %d sec\n", $END_TIME - $START_TIME;
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub print_cluster_tree {
+    my ($tmp_input, $cluster_id, $tmp_alignment, $tmp_tree, $tmp_tree_log, %opt) = @_;
+    
+    my $input = `cat $tmp_input`;
+    my %clusters;
+    my %domains;
+    get_dclst_structure($tmp_input, \%clusters, \%domains);
+
+    my @genes = ();
+    create_alignment($tmp_input, \@genes, $tmp_alignment, region => 0, REGION => 0, DOMAIN => 1);
+
+    if ($opt{N}) {
+	phylogenetic_tree($tmp_alignment, $tmp_tree, $tmp_tree_log, format => "output_for_newick");
+	my $tree = new_tree($tmp_tree);
+    	print_tree(\$tree);
+    	print "\n";
+	return;
+    }
+
+    if (! $OPT{f}) {
+	phylogenetic_tree($tmp_alignment, $tmp_tree, $tmp_tree_log, format => "domain_no_with_0");
+    }
+
+    my $tree = new_tree($tmp_tree);
+    my @nodes = $tree->get_root_node->get_all_Descendents;
+
+    if ($opt{v}) {
+    	print "#Newick\t";
+    	print_tree(\$tree);
+    	print "\n";
+    }
+
+    my $idx;
+    if (@nodes >= 3) {
+	# $idx = find_min_tree($tmp_tree, \@nodes);
+	# my_reroot_at_midpoint(\$tree, $nodes[$idx]);
+	$idx = find_min_tree_fast($tree);
+    }
+
+    if ($opt{v}) {
+    	print "#Newick\t";
+    	print_tree(\$tree);
+    	print "\n";
+    }
+
+    if (@nodes >= 2) {
+	my $dclst;
+	if (@nodes == 2) {
+	    $dclst = divide_tree_2_nodes($tmp_input);
+	}
+	if (@nodes >= 3) {
+	    $dclst = divide_tree($tmp_input, $tmp_tree, $idx);
+	}
+	# my ($score_between) = score_one_c($dclst, between => 1);
+	my $score_between;
+	if ($OPT{S}) {
+	    $score_between = 0;
+	} else {
+	    ($score_between) = score_one_c($dclst, between => 1);
+	}
+	my ($tree_txt, $height, $dist);
+	if ($opt{o} and $opt{o} eq "11") {
+	    my @nodes_tmp = $tree->get_root_node->get_all_Descendents;
+	    my $max_id = $tree->get_root_node->internal_id;
+	    for (my $i=0; $i<@nodes_tmp; $i++) {
+		my $id_tmp = $nodes_tmp[$i]->internal_id;
+		if ($id_tmp > $max_id) {
+		    $max_id = $id_tmp;
+		}
+	    }
+	    ($tree_txt, $height, $dist) = tree_children_o11(\%domains, $tree->get_root_node, 0, 0, $max_id, DOMAIN => 1);
+	    print "Cluster $cluster_id:score=", $score_between * 100, ":dist=", $dist * 100, "\n";
+	} else {
+	    ($tree_txt, $height, $dist) = tree_children_dist(\%domains, $tree->get_root_node, 0, [], DOMAIN => 1);
+	    print "#score\t", $score_between * 100, "\n";
+	    print "#dist\t", $dist * 100, "\n";
+	}
+	print $tree_txt;
+    }
+    if (@nodes == 1) {
+	chomp($input);
+	my @dclst = split("\n", $input);
+	if (@dclst == 1)  {
+	    my ($cluster, $gene, $domain, $begin, $end) = split(/\s+/, $dclst[0]);
+	    if ($opt{o} and $opt{o} eq "11") {
+		print "L 1 -1 $gene $begin $end $domain\n";
+	    } else {
+		print "+- $gene $begin $end $domain\n";
+	    }
+	} else {
+	    die;
+	}
+    }
+    if (@nodes == 0) {
+	die "ERROR: no nodes";
+    }
+}
+
+sub divide_tree {
+    my ($tmp_input, $tmp_tree, $idx) = @_;
+
+    # members of a sub-cluster
+    my ($r_leaves1, $r_leaves2) = get_sub_tree($tmp_tree, $idx);
+    my %sub_cluster_domain;
+    my %sub_cluster_gene;
+    for my $leaf_name (@{$r_leaves1}) {
+	if ($leaf_name =~ /^(\d+)_([A-Za-z0-9]+)_(\S+)$/) {
+	    my ($domain, $sp, $gene) = ($1, $2, $3);
+	    $sub_cluster_domain{"$sp:$gene"}{$domain} = 1;
+	} elsif ($leaf_name =~ /^([A-Za-z0-9]+)_(\S+)$/) {
+	    my ($sp, $gene) = ($1, $2, $3);
+	    $sub_cluster_gene{"$sp:$gene"} = 1;
+	} else {
+	    die $leaf_name;
+	}
+    }
+    # output sub-clusters
+    open(TMP_INPUT, $tmp_input) || die;
+    if (%sub_cluster_domain and %sub_cluster_gene) {
+	die;
+    }
+    my $out = "";
+    while (<TMP_INPUT>) {
+	my ($cluster, $gene, $domain) = split;
+	if (%sub_cluster_gene) {
+	    if ($sub_cluster_gene{$gene}) {
+		s/^(\S+)/${1}d/;
+	    } else {
+		s/^(\S+)/${1}D/;
+	    }
+	} elsif (%sub_cluster_domain) {
+	    if ($sub_cluster_domain{$gene}{$domain}) {
+		s/^(\S+)/${1}d/;
+	    } else {
+		s/^(\S+)/${1}D/;
+	    }
+	}
+	$out .= $_;
+    }
+    close(TMP_INPUT);
+    return $out;
+}
+
+sub get_sub_tree {
+    my ($tree_file, $i, $node1, $node2) = @_;
+
+    my $tree = new_tree($tree_file);
+    my @nodes = $tree->get_root_node->get_all_Descendents;
+    my $n_seq = grep {$_->is_Leaf} @nodes;
+    my $branch_length = $nodes[$i]->branch_length;
+    $tree->move_id_to_bootstrap;
+    my $boot = $nodes[$i]->bootstrap || "";
+
+    # calculation
+    my_reroot_at_midpoint(\$tree, $nodes[$i]);
+    my $root_node = $tree->get_root_node;
+    my ($sub_tree1_node, $sub_tree2_node) = $root_node->each_Descendent;
+    my @leaves1 = get_sub_tree_leaves($sub_tree1_node);
+    my @leaves2 = get_sub_tree_leaves($sub_tree2_node);
+    # print STDERR "leaves1 @leaves1\n";
+    # print STDERR "leaves2 @leaves2\n";
+
+    # print
+    $node1 ||= "";
+    $node2 ||= "";
+    my $height = sprintf("%.5f", $root_node->height);
+    my @len1 = get_sub_tree_branch_length($sub_tree1_node);
+    my @len2 = get_sub_tree_branch_length($sub_tree2_node);
+    my $len1 = mean(@len1) || 0;
+    my $len2 = mean(@len2) || 0;
+    $len1 = sprintf("%.5f", $len1);
+    $len2 = sprintf("%.5f", $len2);
+    my $len12 = mean(@len1, @len2);
+    my $len_relative = 0;
+    if ($len12) {
+	$len_relative = $branch_length / $len12;
+    }
+    $len_relative = sprintf("%.5f", $len_relative);
+    my $log_ratio_len = "";
+    if ($len2 != 0 && $len1/$len2) {
+	$log_ratio_len = log($len1/$len2)/log(2);
+	$log_ratio_len = abs($log_ratio_len);
+	$log_ratio_len = sprintf("%.5f", $log_ratio_len);
+    }
+    my $height1 = sprintf("%.5f", $sub_tree1_node->height);
+    my $height2 = sprintf("%.5f", $sub_tree2_node->height);
+
+    my $min_height = ($height1 + $height2 + $branch_length) / 2;
+    if ($min_height < $height1 and $min_height < $height2) {
+	die;
+    } elsif ($min_height < $height1) {
+	$min_height = $height1;
+    } elsif ($min_height < $height2) {
+	$min_height = $height2;
+    }
+
+    return(\@leaves1, \@leaves2);
+}
+
+sub divide_tree_2_nodes {
+    my ($tmp_input) = @_;
+
+    open(TMP_INPUT, $tmp_input) || die;
+    my $out = "";
+    while (<TMP_INPUT>) {
+	if ($. == 1) {
+	    s/^(\S+)/${1}d/;
+	} elsif ($. == 2) {
+	    s/^(\S+)/${1}D/;
+	} else {
+	    die;
+	}
+	$out .= $_;
+    }
+    close(TMP_INPUT);
+    return $out;
+}

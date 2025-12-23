@@ -1,0 +1,192 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-r: align by region
+-R: align only region
+-d: domain by domain
+-N: Newick
+-u: plot unrooted tree
+-C: color by cluster
+-T: color by taxonomy
+-c CACH_DIR
+-D SEQ_DB
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Refine;
+use DomRefine::Tree;
+
+### Settings ###
+my %OPT;
+getopts('rRdNuCTc:D:', \%OPT);
+
+if ($OPT{c}) {
+    $ENV{'DOMREFINE_CACHE'} = $OPT{c};
+}
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+my $TMP_ALIGNMENT_ERR = define_tmp_file("$PROGRAM.alignment.err");
+my $TMP_TREE = define_tmp_file("$PROGRAM.ph");
+my $TMP_TREE_LOG = define_tmp_file("$PROGRAM.tree_log");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file($TMP_ALIGNMENT_ERR);
+    remove_tmp_file($TMP_TREE);
+    remove_tmp_file($TMP_TREE_LOG);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my @GENE = ();
+create_alignment($TMP_INPUT, \@GENE, $TMP_ALIGNMENT, region => $OPT{r}, REGION => $OPT{R}, DOMAIN => $OPT{d});
+
+phylogenetic_tree($TMP_ALIGNMENT, $TMP_TREE, $TMP_TREE_LOG);
+
+if ($OPT{N}) {
+    system "cat $TMP_TREE";
+    exit;
+}
+
+### Draw tree ###
+my $PLOT_TREE = "rscript -n $ENV{DOMREFINE_DIR}/bin_dev/plot_tree.R";
+if ($OPT{u}) {
+    $PLOT_TREE .= " -u";
+}
+if ($OPT{C}) {
+    $PLOT_TREE .= color_leaves_for_two_clusters($TMP_INPUT, domain => $OPT{d});
+} elsif ($OPT{T}) {
+    $PLOT_TREE .= color_leaves_for_taxa($TMP_INPUT, domain => $OPT{d});
+}
+system "cat $TMP_TREE | tree_minimize | $PLOT_TREE @ARGV"; # ARGV: filename
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub color_leaves_for_taxa {
+    my ($tmp_input, %opt) = @_;
+
+    my $endpoint = $ENV{DOMREFINE_ENDPOINT} || die;
+
+    my @org_name = `cat $tmp_input | cut.sh 2 | cut.sh 1 : | sort | uniq | perl -pe 's/^/org:/' | spang $endpoint mbgd2016/org2taxnames -a | perl -pe 's/^org://'`;
+    chomp(@org_name);
+
+    my %org_name = ();
+    for my $org_name (@org_name) {
+	my ($org, $name) = split("\t", $org_name);
+	$org_name{$org}{$name} = 1;
+    }
+
+    my @archaea = ();
+    my @euka = ();
+    my @bactero = ();
+    my @actino = ();
+    my @entero = ();
+    my @gamma = ();
+    my @alpha = ();
+    my @beta = ();
+    my @firm = ();
+    my @proteo = ();
+    my @chlamy = ();
+    my @cyano = ();
+    open(TMP_INPUT, $tmp_input) || die;
+    while (<TMP_INPUT>) {
+	my ($cluster, $gene, $domain) = split;
+	my ($org) = split(":", $gene);
+	if ($org_name{$org}{'"Archaea"'}) {
+	    push @archaea, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Eukaryota"'}) {
+	    push @euka, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Actinobacteria"'}) {
+	    push @actino, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Bacteroidetes/Chlorobi group"'}) {
+	    push @bactero, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Cyanobacteria"'}) {
+	    push @cyano, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Firmicutes"'}) {
+	    push @firm, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Chlamydiae/Verrucomicrobia group"'}) {
+	    push @chlamy, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Alphaproteobacteria"'}) {
+	    push @alpha, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Betaproteobacteria"'}) {
+	    push @beta, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Enterobacteriaceae"'}) {
+	    push @entero, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Gammaproteobacteria"'}) {
+	    push @gamma, $opt{domain} ? "${domain}_$gene" : $gene;
+	} elsif ($org_name{$org}{'"Proteobacteria"'}) {
+	    push @proteo, $opt{domain} ? "${domain}_$gene" : $gene;
+	}
+    }
+    close(TMP_INPUT);
+
+    return create_color_option(p=>\@archaea, b=>\@actino, g=>\@cyano, y=>\@chlamy, a=>\@proteo, 1=>\@alpha, G=>\@beta, v=>\@gamma, V=>\@entero, Y=>\@firm, O=>\@bactero, r=>\@euka);
+}
+
+sub color_leaves_for_two_clusters {
+    my ($tmp_input, %opt) = @_;
+    
+    # cluster1(small_number_id) => blue, cluster2(large_number_id) => red
+    my %domain;
+    my %cluster;
+    get_dclst_structure($tmp_input, \%cluster, \%domain);
+    my ($cluster1, $cluster2) = get_clusters($tmp_input);
+    if (! defined $cluster2) {
+	return "";
+    }
+
+    my @cluster1_member = ();
+    my @cluster2_member = ();
+    my @both_member = ();
+    for my $gene (keys %domain) {
+    	if ($opt{domain}) {
+    	    for my $domain (keys %{$domain{$gene}}) {
+    		if ($domain{$gene}{$domain}{cluster} eq $cluster1) {
+    		    push @cluster2_member, "${domain}_${gene}";
+    		} elsif ($domain{$gene}{$domain}{cluster} eq $cluster2) {
+    		    push @cluster1_member, "${domain}_${gene}";
+    		}
+    	    }
+    	} else {
+    	    if ($cluster{$cluster1}{$gene} and $cluster{$cluster2}{$gene}) {
+    		push @both_member, $gene;
+    	    } elsif ($cluster{$cluster1}{$gene}) {
+    		push @cluster1_member, $gene;
+    	    } elsif ($cluster{$cluster2}{$gene}) {
+    		push @cluster2_member, $gene;
+    	    }
+    	}
+    }
+
+    return create_color_option(b => \@cluster1_member, r => \@cluster2_member, v => \@both_member);
+    # return create_color_option(p => \@cluster1_member, a => \@cluster2_member, v => \@both_member);
+}
+
+sub create_color_option {
+    my (%opt) = @_;
+    
+    my $option = "";
+    for my $k (keys %opt) {
+	my $r_list = $opt{$k};
+	if (@{$r_list}) {
+	    my $list = join(",", @{$r_list});
+	    $option .= " -$k $list";
+	}
+    }
+    $option =~ s/[:\|]/_/g;
+
+    return $option;
+}

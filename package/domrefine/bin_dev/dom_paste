@@ -1,0 +1,89 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my %domain = ();
+my %cluster = ();
+get_dclst_structure($TMP_INPUT, \%cluster, \%domain);
+
+paste_short_domains(\%domain);
+
+output_domains(\%domain);
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub paste_short_domains {
+    my ($r_domain) = @_;
+    
+    for my $gene (sort { $a cmp $b } keys %{$r_domain}) {
+	for my $domain (sort { $b <=> $a } keys %{${$r_domain}{$gene}}) {
+	    # domain info
+	    my $cluster = ${$r_domain}{$gene}{$domain}{cluster};
+	    my $begin = ${$r_domain}{$gene}{$domain}{begin};
+	    my $end = ${$r_domain}{$gene}{$domain}{end};
+	    if (! defined $begin) {
+		die "$gene $domain";
+	    }
+	    if (! defined $end) {
+		die "$gene $domain";
+	    }
+	    my $len = $end - $begin + 1;
+	    
+	    # identify the adjacent domain
+	    my $adj_domain;
+	    # if ( (${$r_domain}{$gene}{$domain-1} and ${$r_domain}{$gene}{$domain-1} ne $cluster) and
+	    # 	 (${$r_domain}{$gene}{$domain+1} and ${$r_domain}{$gene}{$domain+1} ne $cluster) ) {
+	    # } elsif (${$r_domain}{$gene}{$domain-1} and ${$r_domain}{$gene}{$domain-1} ne $cluster) {
+	    # 	$adj_domain = $domain - 1; # the adjacent domain is in the left
+	    # } elsif (${$r_domain}{$gene}{$domain+1} and ${$r_domain}{$gene}{$domain+1} ne $cluster) {
+	    # 	$adj_domain = $domain + 1; # the adjacent domain is in the right
+	    # }
+	    if (${$r_domain}{$gene}{$domain-1}) {
+	    	$adj_domain = $domain - 1; # the adjacent domain in the left
+	    } elsif (${$r_domain}{$gene}{$domain+1}) {
+		$adj_domain = $domain + 1; # the adjacent domain in the right
+	    }
+
+	    # paste the domain to the adjacent one
+	    if (defined $adj_domain) {
+		my $adj_begin = ${$r_domain}{$gene}{$adj_domain}{begin};
+		my $adj_end = ${$r_domain}{$gene}{$adj_domain}{end};
+		my $adj_len = $adj_end - $adj_begin + 1;
+		if ($len <= 5) {
+		    # if ($adj_len >= 50) {
+			print STDERR "paste [$cluster] $gene($domain) $begin-$end($len) $adj_begin-$adj_end($adj_len)\n";
+			delete ${$r_domain}{$gene}{$domain};
+			my $new_begin = min($begin, $adj_begin);
+			my $new_end = max($end, $adj_end);
+			${$r_domain}{$gene}{$adj_domain}{begin} = $new_begin;
+			${$r_domain}{$gene}{$adj_domain}{end} = $new_end;
+		    # } else {
+		    # 	print STDERR "not_paste [$cluster] $gene($domain) $begin-$end($len) $adj_begin-$adj_end($adj_len)\n";
+		    # }
+		}
+	    }
+	}
+    }
+}

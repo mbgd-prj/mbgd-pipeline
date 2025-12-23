@@ -1,0 +1,56 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+my %MEMBER = ();
+read_cluster_members($DCLST, \%MEMBER);
+for my $cluster (keys %MEMBER) {
+    for my $gene (keys %{$MEMBER{$cluster}}) {
+        my @domains = sort {$a<=>$b} keys(%{$MEMBER{$cluster}{$gene}});
+        for (my $i=$#domains; $i>=1; $i--) {
+            my $domain = $domains[$i];
+            my $prev_domain = $domains[$i-1];
+            if ($prev_domain + 1 == $domain) {
+                if ($MEMBER{$cluster}{$gene}{$prev_domain}{start} > $MEMBER{$cluster}{$gene}{$domain}{start}) {
+                    die "$cluster $gene";
+                }
+                $MEMBER{$cluster}{$gene}{$prev_domain}{end} = $MEMBER{$cluster}{$gene}{$domain}{end};
+                delete $MEMBER{$cluster}{$gene}{$domain};
+                # print STDERR "$cluster $gene $domain\n";
+            }
+        }
+    }
+}
+
+my %NEW_DOMAIN_NO = ();
+assign_new_domain_number(\%MEMBER, \%NEW_DOMAIN_NO);
+for my $cluster (sort {$a cmp $b} keys %MEMBER) {
+    for my $gene (sort {$a cmp $b} keys %{$MEMBER{$cluster}}) {
+        for my $domain (sort {$a <=> $b} keys %{$MEMBER{$cluster}{$gene}}) {
+            my $start = $MEMBER{$cluster}{$gene}{$domain}{start};
+            my $end = $MEMBER{$cluster}{$gene}{$domain}{end};
+            my $new_domain_no = $NEW_DOMAIN_NO{$gene}{$domain};
+            print "$cluster $gene $new_domain_no $start $end\n";
+        }
+    }
+}

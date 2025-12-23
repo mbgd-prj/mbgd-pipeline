@@ -1,0 +1,195 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use DB_File;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-d N: max distance to connect (1 by default)
+-v: verbose
+-c TAB_FILE: create order.dbm and strand.dbm from TAB_FILE
+-r DIR: directory to find order.dbm and strand.dbm
+";
+# -D SEQ_DB
+
+# WARNING: beforehand, domain end should be adjusted.
+
+# BUG: when renumbering domains
+#  when applied to skipping domains.
+#  what about applying to already fused domains ?
+
+use DomRefine::Read;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('d:vc:r:D:', \%OPT);
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+my $ORDER_DBM = "order.dbm";
+my $STRAND_DBM = "strand.dbm";
+
+my $MAX_DISTANCE = 1;
+if ($OPT{d}) {
+    $MAX_DISTANCE = $OPT{d};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+!$OPT{c} && -t and die $USAGE;
+
+my %ORDER = ();
+my %STRAND = ();
+
+### Create DBM files ###
+if ($OPT{c}) {
+    remove_tmp_file($ORDER_DBM);
+    remove_tmp_file($STRAND_DBM);
+
+    tie %ORDER, "DB_File", "$ORDER_DBM" or die $!;
+    tie %STRAND, "DB_File", "$STRAND_DBM" or die $!;
+
+    open(TMP_TABALL, $OPT{c});
+    while (<TMP_TABALL>) {
+	if (/^([A-Za-z0-9]+) (\S+) \d+ (\d+) (\S+)$/) {
+	    my ($sp, $name, $order, $strand) = ($1, $2, $3, $4);
+	    my $gene = "$sp:$name";
+	    $ORDER{$gene} = $order;
+	    $STRAND{$gene} = $strand;
+	}
+    }
+    close(TMP_TABALL);
+    exit;
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+### Read DBM files ###
+my $DBM_DIR = ".";
+if ($OPT{r}) {
+    $DBM_DIR = $OPT{r};
+}
+tie %ORDER, "DB_File", "$DBM_DIR/$ORDER_DBM" or die $!;
+tie %STRAND, "DB_File", "$DBM_DIR/$STRAND_DBM" or die $!;
+print STDERR " $DBM_DIR/$ORDER_DBM\n";
+print STDERR " $DBM_DIR/$STRAND_DBM\n";
+
+my %CLUSTER = ();
+my %DOMAIN = ();
+get_dclst_structure($TMP_INPUT, \%CLUSTER, \%DOMAIN);
+my @GENE = uniq(keys %DOMAIN);
+# print STDERR "@GENE\n";
+
+my %SEQ = ();
+read_seq(\%SEQ, \@GENE);
+
+# find geneset to fuse
+my %GENE_TO_GENESET = ();
+my %GENOME_POS = ();
+for my $gene (@GENE) {
+    for my $domain (sort {$a <=> $b} keys %{$DOMAIN{$gene}}) {
+	my ($sp, $name) = decompose_gene_id($gene);
+	$GENOME_POS{$sp}{$gene}{order} = $ORDER{$gene};
+	$GENOME_POS{$sp}{$gene}{strand} = $STRAND{$gene};
+
+	my $gene_to_connect = check_connection(\%GENOME_POS, $sp, $ORDER{$gene}, $STRAND{$gene});
+	if ($gene_to_connect) {
+	    my $geneset = $GENE_TO_GENESET{$gene_to_connect};
+	    $geneset = "$geneset|$gene";
+	    my @geneset = split(/\|/, $geneset);
+	    for (my $i=0; $i<@geneset; $i++) {
+		$GENE_TO_GENESET{$geneset[$i]} = $geneset;
+	    }
+	} else {
+	    $GENE_TO_GENESET{$gene} = $gene;
+	}
+    }
+}
+
+for my $geneset (uniq(values %GENE_TO_GENESET)) {
+    # sort genes by the order considering the strand
+    my @gene = uniq split(/\|/, $geneset);
+    if (@gene == 1) {
+    } elsif ($STRAND{$gene[0]} == 1) {
+	@gene = sort {$ORDER{$a} <=> $ORDER{$b}} @gene;
+    } elsif ($STRAND{$gene[0]} == -1) {
+	@gene = sort {$ORDER{$b} <=> $ORDER{$a}} @gene;
+    } else {
+	die;
+    }
+    my @order = ();
+    for my $gene (@gene) {
+	push @order, $ORDER{$gene};
+    }
+    # fuse geneset
+    my $offset = 0;
+    my $domain_no;
+    my $previous_gene = "";
+    for my $gene (@gene) {
+	for my $domain (sort {$a <=> $b} keys %{$DOMAIN{$gene}}) {
+	    if (@gene == 1) {
+		$domain_no = $domain;
+	    } elsif (defined $domain_no) {
+		$domain_no ++;
+	    } elsif ($domain) {
+		$domain_no = $domain;
+	    } else {
+		$domain_no = 1;
+	    }
+	    if ($previous_gene ne "" and $previous_gene ne $gene) {
+		$offset += get_gene_length(\%SEQ, $previous_gene);
+	    }
+	    my $cluster = $DOMAIN{$gene}{$domain}{cluster};
+	    my $geneset_sorted = join("|", @gene);
+	    my $begin = $offset + $DOMAIN{$gene}{$domain}{begin};
+	    my $end = $offset + $DOMAIN{$gene}{$domain}{end};
+	    print "$cluster $geneset_sorted $domain_no $begin $end";
+	    if ($OPT{v} and @order >= 2) {
+		print " (", join(",", @order), ")";
+	    }
+	    print "\n";
+	    $previous_gene = $gene;
+	}
+    }
+}
+
+untie %ORDER;
+untie %STRAND;
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+
+sub check_connection {
+    my ($r_genome_pos, $sp, $order, $strand) = @_;
+
+    my @gene = keys %{${$r_genome_pos}{$sp}};
+    for my $gene (sort {$a cmp $b} @gene) {
+	if (! defined ${$r_genome_pos}{$sp}{$gene}{order}) {
+	    print STDERR "no information for $sp $gene\n";
+	    return;
+	}
+	my $distance = distance(${$r_genome_pos}{$sp}{$gene}{order}, $order);
+	if (${$r_genome_pos}{$sp}{$gene}{strand} == $strand # same strand
+	    and $distance >= 1 and $distance <= $MAX_DISTANCE # neighboring gene
+# 	    and defined $DOMAIN{$gene}{0} # unsplitted gene
+	    ) {
+	    return $gene;
+	}
+    }
+}
+
+sub distance {
+    my ($order1, $order2) = @_;
+
+    return abs($order2 - $order1);
+}

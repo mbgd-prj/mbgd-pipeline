@@ -1,0 +1,52 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Motif;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER | $PROGRAM LINK
+-H: use homology data in MySQL
+-t TABOUT: use homology data in file
+-r RATIO: ratio of segment coverage by homology
+-R RATIO: ratio of homology links
+";
+
+### Settings ###
+my %OPT;
+getopts('Ht:r:R:', \%OPT);
+
+!@ARGV and die $USAGE;
+my $LINK = $ARGV[0];
+
+### Read homology data ###
+my ($DBH, $DBH_ACCUM) = (get_dbh("mbgd"), get_dbh("mbgd_accum")) if $OPT{H};
+my %HOM = ();
+read_homology_data($OPT{t}, \%HOM) if $OPT{t};
+
+### Read clusters ###
+my %MEMBER = ();
+-t and die $USAGE;
+my @DOM_TABLE = <STDIN>;
+chomp(@DOM_TABLE);
+read_cluster_members(join("\n", @DOM_TABLE), \%MEMBER);
+
+### Check each link ###
+open(LINK, $LINK) || die;
+while (<LINK>) {
+    chomp;
+    my @cluster_pair = split(/[-, ]/, $_);
+    if (@cluster_pair != 2) {
+	die;
+    }
+    if ($OPT{t}) {
+	check_merge_by_hom(\%MEMBER, @cluster_pair, \%HOM, r => $OPT{r}, R => $OPT{R});
+    } elsif ($OPT{H}) {
+	check_merge_by_hom_mysql(\%MEMBER, @cluster_pair, dbh => $DBH, dbh_accum => $DBH_ACCUM, r => $OPT{r}, R => $OPT{R});
+    } else {
+	die;
+    }
+}
+close(LINK);

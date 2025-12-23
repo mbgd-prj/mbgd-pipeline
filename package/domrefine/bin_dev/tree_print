@@ -1,0 +1,52 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Tree;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my $TREE = new_tree($TMP_INPUT);
+print tree_print($TREE->get_root_node, 0);
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+sub tree_print {
+    my ($node, $offset, @bar) = @_;
+
+    my @child = $node->each_Descendent;
+    if (@child == 2) {
+	my @bar1 = reset_bar(-$offset, @bar, -($offset+2));
+	my @bar2 = reset_bar($offset, @bar, $offset+2);
+	return
+	    tree_print($child[0], $offset+2, @bar1) .
+	    tree_padding($offset, @bar) . "+-|\n" .
+	    tree_print($child[1], $offset+2, @bar2);
+    } elsif (@child == 0) {
+	return
+	    tree_padding($offset, @bar) . "+- " . $node->to_string . "\n";
+    } elsif (@child == 1) {
+	return "+- " . $child[0]->to_string . "\n";
+    } else {
+	print STDERR scalar(@child), " children.\n";
+	die;
+    }
+}

@@ -1,0 +1,227 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-m MOTIF_REFERENCE_FILE
+-a GENE_ANNOTATION_FILE
+-A : gene annotation by mysql
+-1 : shown on one alignment
+-g : graphics
+-O : clustalo_order
+-r : align by region
+-d : domain
+-l GENE_LIST : file of list of gene to show
+";
+# -M MOTIFS_TO_IGNORE
+# -P : Perl code (not C) for score calculation
+# -S: skip score calculation
+# -D SEQ_DB
+# -C : turn off cache
+# -c : conservation rate
+# -i INPUT_ALIGNMENT
+
+# WARNING: do NOT change the order of sequences in the alignment
+#          for -d option .
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Refine;
+use DomRefine::Draw;
+use DomRefine::Motif;
+use DomRefine::Score;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('m:M:a:A1grdPSD:OCcl:i:', \%OPT);
+
+my %ANNOTATION = ();
+get_annotation("cluster.descr", \%ANNOTATION);
+my %HOMCLUSTER = ();
+get_annotation("homcluster", \%HOMCLUSTER);
+my %GENE_DESCR = ();
+if ($OPT{a}) {
+    get_annotation($OPT{a}, \%GENE_DESCR);
+}
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+# } else {
+#     $ENV{'DOMREFINE_SEQ_DB'} = "/db/project/MBGD/database/bldb";
+}
+if ($OPT{O}) {
+    $ENV{'DOMREFINE_ALIGNER'} = "clustalo1.2order";
+    # $ENV{'DOMREFINE_ALIGNER'} = "clustalo1.2orderkimura";
+} else {
+    # $ENV{'DOMREFINE_ALIGNER'} = "clustalo1.2kimura";
+}
+if ($OPT{d}) {
+    if ($ENV{DOMREFINE_ALIGNER} =~ /order/) {
+	die;
+    }
+}
+if ($OPT{C}) {
+    $ENV{'DOMREFINE_READ_ALIGNMENT_CACHE'} = 0;
+    $ENV{'DOMREFINE_WRITE_ALIGNMENT_CACHE'} = 0;
+}
+my %GENE_LIST = ();
+if ($OPT{l}) {
+    my @gene = `cat $OPT{l} | cut 1`;
+    chomp(@gene);
+    for my $gene (@gene) {
+	if ($gene =~ /\S/) {
+	    $GENE_LIST{$gene} = 1;
+	}
+    }
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_DCLST = define_tmp_file("$PROGRAM.dclst");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_DCLST);
+    remove_tmp_file($TMP_ALIGNMENT);
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+my @CLUSTER = get_clusters($TMP_INPUT);
+
+print STDERR "Read seq..\n";
+my %SEQ = ();
+read_dclst_seq($TMP_INPUT, \%SEQ);
+
+my $IMAGE;
+my %COLOR;
+my %PARAM;
+my $OFFSET = 0;
+my $SCORE_SUM = 0;
+if ($OPT{1}) {
+    my @gene = ();
+    if ($OPT{i}) {
+	system "cat $OPT{i} > $TMP_ALIGNMENT";
+	read_fasta_entries($TMP_ALIGNMENT, \@gene);
+    } else {
+	print STDERR "\nAlignment..\n";
+	create_alignment($TMP_INPUT, \@gene, $TMP_ALIGNMENT, region => $OPT{r}, domain => $OPT{d});
+    }
+    my @a =();
+    my @b = ();
+    my @d = (); 
+    my %p = ();
+    my %cluster = ();
+    my %domain = ();
+    my @get_j = ();
+    my ($n, $m) = get_alignment_matrices($TMP_INPUT, $TMP_ALIGNMENT, \@gene, \@a, \@b, \@d, \%p, \%cluster, \%domain, \@get_j, uniq => 1, domain => $OPT{d}, gene_list => \%GENE_LIST);
+    print STDERR "\nScore..\n";
+    my @score_for_line;
+    if (! $OPT{S}) {
+	if ($OPT{P}) {
+	    $SCORE_SUM = calculate_total_score(\@gene, \%domain, \@a, \@b, \%cluster);
+	} else {
+	    ($SCORE_SUM) = score_one_c($DCLST, region => $OPT{r});
+	}
+	save_contents(merge_all($DCLST), $TMP_DCLST); # BUG?: should be 'realy' merged
+	my @gene_after_merge = ();
+	@score_for_line = score_for_lines($TMP_DCLST, \@gene_after_merge);
+	for (my $i=0; $i<@gene; $i++) {
+	    if ($gene[$i] ne $gene_after_merge[$i]) {
+		die "$gene[$i] $gene_after_merge[$i]";
+	    }
+	}
+    }
+    print STDERR "\nImage..\n";
+    create_image(\$IMAGE, \%COLOR, [$n], $m, scalar(@CLUSTER), \%PARAM);
+    $OFFSET = - $PARAM{Y_UNIT};
+    for (my $c=0; $c<@CLUSTER; $c++) {
+	my $n_gene = scalar(extract_genes(extract_dclst($TMP_INPUT, $CLUSTER[$c])));
+	draw_rect_filled(\$IMAGE, \%COLOR, 0, $OFFSET, %PARAM, color_idx => $c);
+	draw_annotation(\$IMAGE, \%COLOR, 50, $OFFSET, %PARAM, homcluster => $HOMCLUSTER{$CLUSTER[$c]}, cluster => $CLUSTER[$c], scores => $n_gene, annotation => $ANNOTATION{$CLUSTER[$c]});
+    	$OFFSET += $PARAM{Y_UNIT};
+    }
+    draw_annotation(\$IMAGE, \%COLOR, 120, $OFFSET, %PARAM, scores => $n);
+    $OFFSET += $PARAM{Y_UNIT};
+    # paint domains
+    $OFFSET += $PARAM{Y_UNIT} * 0.25;
+    for (my $i=0; $i<$n; $i++) {
+	for (my $j=0; $j<$m; $j++) {
+	    if ($d[$i][$j]) {
+		my $color;
+		if ($CLUSTER[0] and $d[$i][$j] eq $CLUSTER[0]) {
+		    $color = $COLOR{PALEBLUE};
+		} elsif ($CLUSTER[1] and $d[$i][$j] eq $CLUSTER[1]) {
+		    $color = $COLOR{PINK};
+		} else {
+		    $color = $COLOR{LIGHTGRAY};
+		}
+		draw_tick(\$IMAGE, $color, $PARAM{X_UNIT}*$j, $OFFSET+$PARAM{Y_UNIT}*$i, %PARAM, y_pos_shift => $PARAM{Y_DOMAIN});
+	    }
+	}
+    }
+    draw_alignment(\@gene, \@a, \@b, \@d, \%p, \@get_j, \$IMAGE, \%COLOR, \$OFFSET, \%domain, %PARAM
+		   , r_scores_for_line => \@score_for_line, r_seq => \%SEQ, r_gene_descr => \%GENE_DESCR, mysql => $OPT{A}
+		   , reference_file => $OPT{m}, motifs_to_ignore => $OPT{M}, conserv => !$OPT{c});
+} else {
+    my @a_gene = ();
+    my @a_a = ();
+    my @a_b = ();
+    my @a_d = ();
+    my @h_p = ();
+    my @a_get_j = ();
+    my @h_domain = ();
+    my @n = ();
+    my @m = ();
+    my @scores = ();
+    my @score_for_line = ();
+    for (my $i=0; $i<@CLUSTER; $i++) {
+	print STDERR "\[cluster $CLUSTER[$i]\]\n";
+	save_contents(extract_dclst($TMP_INPUT, $CLUSTER[$i]), $TMP_DCLST);
+	($a_gene[$i], $a_a[$i], $a_b[$i], $a_d[$i]) = ([], [], [], []);
+	$a_get_j[$i] = [];
+	%{$h_p[$i]} = ();
+	%{$h_domain[$i]} = ();
+	my %cluster = ();
+	print STDERR "\nAlignment..\n";
+	create_alignment($TMP_DCLST, $a_gene[$i], $TMP_ALIGNMENT, region => $OPT{r}, domain => $OPT{d});
+	my ($n, $m) = get_alignment_matrices($TMP_DCLST, $TMP_ALIGNMENT, $a_gene[$i], $a_a[$i], $a_b[$i], $a_d[$i], $h_p[$i], \%cluster, $h_domain[$i], $a_get_j[$i], domain => $OPT{d});
+	push @n, $n;
+	push @m, $m;
+	print STDERR "Score..\n";
+	$score_for_line[$i] = [];	
+	my @score = calculate_scores($a_a[$i], $a_b[$i], $a_d[$i], $h_p[$i], $score_for_line[$i]);
+	$scores[$i] = join("  ", @score);
+	$SCORE_SUM += $score[-1];
+    }
+    print STDERR "Image..\n";
+    create_image(\$IMAGE, \%COLOR, \@n, max(@m), 1, \%PARAM);
+    for (my $c=0; $c<@CLUSTER; $c++) {
+	print STDERR "[$CLUSTER[$c]]\n";
+	draw_annotation(\$IMAGE, \%COLOR, 0, $OFFSET - $PARAM{Y_UNIT}, %PARAM
+			, homcluster => $HOMCLUSTER{$CLUSTER[$c]}, cluster => $CLUSTER[$c], annotation => $ANNOTATION{$CLUSTER[$c]}, scores => $scores[$c]);
+	$OFFSET += $PARAM{Y_UNIT} * 0.25;
+	my $n = @{$a_a[$c]};
+	my $m = @{${$a_a[$c]}[0]};
+	for (my $i=0; $i<$n; $i++) {
+	    for (my $j=0; $j<$m; $j++) {
+		if (${$a_d[$c]}[$i][$j]) {
+		    draw_tick(\$IMAGE, $COLOR{PALEBLUE}, $PARAM{X_UNIT}*$j, $OFFSET+$PARAM{Y_UNIT}*$i, %PARAM, y_pos_shift => $PARAM{Y_DOMAIN});
+		}
+	    }
+	}
+	draw_alignment($a_gene[$c], $a_a[$c], $a_b[$c], $a_d[$c], $h_p[$c], $a_get_j[$c], \$IMAGE, \%COLOR, \$OFFSET, $h_domain[$c], %PARAM
+		       , r_scores_for_line => $score_for_line[$c], r_seq => \%SEQ, r_gene_descr => \%GENE_DESCR, mysql => $OPT{A}
+		       , reference_file => $OPT{m}, motifs_to_ignore => $OPT{M}, conserv => !$OPT{c});
+    }
+}
+
+# total score
+$OFFSET += $PARAM{MARGIN} * 0.25;
+draw_annotation(\$IMAGE, \%COLOR, 0, $OFFSET - $PARAM{MARGIN}, %PARAM, annotation => "TOTAL SCORE: $SCORE_SUM");
+
+# ouput image
+my $OUT_FILE_NAME = defined($ARGV[0]) ? $ARGV[0] : $PROGRAM;
+create_png(\$IMAGE, $OUT_FILE_NAME, draw_now => $OPT{g});

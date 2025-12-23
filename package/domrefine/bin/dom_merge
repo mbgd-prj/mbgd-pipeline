@@ -1,0 +1,19 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+### Main ###
+-t and die $USAGE;
+print merge_all(save_stdin());

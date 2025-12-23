@@ -1,0 +1,130 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Draw;
+
+### Settings ###
+my %OPT;
+getopts('s', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_DISPLAY_PL_DCLST = define_tmp_file("$PROGRAM.dclst");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_DISPLAY_PL_DCLST);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my $out = display_modified_input($TMP_INPUT);
+
+### Display ###
+open(P, "|less -SR") || die;
+print P $out;
+close(P);
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+
+sub display_alignment {
+    my ($r_gene, $r_domain, $r_a, $r_b, $r_d, $r_p) = @_;
+
+    my $n = @{$r_a};
+    my $m = @{${$r_a}[0]};
+
+    my $HIGH = 0.7;
+    my $MIDDLE = 0.5;
+    my $LOW = 0.3;
+
+    my $DEFAULT = 0;
+    my $BOLD = 1;
+    my $RED = 31;
+    my $GREEN = 32;
+    my $YELLOW = 33;
+    my $CYAN = 36;
+    my $BK_BLUE = 44;
+
+    my @color = ();
+    for (my $i=0; $i<$n; $i++) {
+	for (my $j=0; $j<$m; $j++) {
+	    $color[$i][$j] = "$DEFAULT";
+	    if (${$r_b}[$i][$j] == 1) {
+		if (${$r_p}{$j}{${$r_a}[$i][$j]} >= $HIGH) {
+		    $color[$i][$j] .= ";$RED;$BOLD";
+		} elsif (${$r_p}{$j}{${$r_a}[$i][$j]} >= $MIDDLE) {
+		    $color[$i][$j] .= ";$GREEN;$BOLD";
+		} elsif (${$r_p}{$j}{${$r_a}[$i][$j]} >= $LOW) {
+		    $color[$i][$j] .= ";$BOLD";
+		}
+	    }
+	    if (${$r_d}[$i][$j]) {
+		$color[$i][$j] .= ";$BK_BLUE";
+	    }
+	}
+    }
+
+    my $width = 22;
+    my $out = "";
+    for (my $i=0; $i<$n; $i++) {
+	my $gene = ${$r_gene}[$i];
+	my @domains = sort {$a<=>$b} keys %{${$r_domain}{$gene}};
+	my $domains = join(",", @domains);
+	my $caption = sprintf("%${width}s ", "$gene($domains)");
+	$out .= $caption;
+	for (my $j=0; $j<$m; $j++) {
+	    $out .= get_color_code($color[$i][$j]);
+	    $out .= ${$r_a}[$i][$j];
+	}
+	$out .= get_color_code($DEFAULT);
+	$out .= "\n";
+    }
+    
+    return $out;
+}
+
+sub display_modified_input {
+    my ($dclst_table_file) = @_;
+    
+    my $out = "";
+    for my $cluster (get_clusters($dclst_table_file)) {
+	$out .= "[$cluster]\n";
+	$out .= disp_dclst(extract_dclst($dclst_table_file, $cluster));
+    }
+
+    return $out;
+}
+
+sub disp_dclst {
+    my ($dclst) = @_;
+    save_contents($dclst, $TMP_DISPLAY_PL_DCLST);
+
+    my @gene = ();
+    my @a =();
+    my @b = ();
+    my %p = ();
+    get_alignment_structure($TMP_DISPLAY_PL_DCLST, \@gene, \@a, \@b, \%p);
+    my %domain = ();
+    my %cluster = ();
+    get_dclst_structure($TMP_DISPLAY_PL_DCLST, \%cluster, \%domain);
+    my @d = (); 
+    map_domains(\@gene, \%domain, \@b, \@d);
+    
+    return display_alignment(\@gene, \%domain, \@a, \@b, \@d, \%p);
+}
+
+sub get_color_code {
+    my ($color) = @_;
+    
+    return "\x1b[" . $color . "m";
+}

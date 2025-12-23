@@ -1,0 +1,82 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM GENE_ID ...
+       cat GENE_ID | $PROGRAM
+-t: TIGRFAMs motif
+-p: Pfam motif
+-v: detailed information
+";
+
+use DomRefine::Read;
+
+my %OPT;
+getopts('vtp', \%OPT);
+
+### Settings
+my $ENDPOINT = $ENV{DOMREFINE_ENDPOINT} || die;
+my $SPARQL = "mbgd2016/gene2motif";
+if ($OPT{v}) {
+    $SPARQL = "mbgd2016/gene2motif_info";
+}
+
+# my $TMP_GENE;
+# unless ($ENV{HOSTNAME}) {
+#     die;
+# }
+# if ($ENV{TMP}) {
+#     $TMP_GENE = "$ENV{TMP}/$PROGRAM.$ENV{HOSTNAME}.$$";
+# } else {
+#     $TMP_GENE = "/tmp/$PROGRAM.$ENV{HOSTNAME}.$$";
+# }
+
+my $TMP_GENE = define_tmp_file("$PROGRAM");
+END {
+    remove_tmp_file($TMP_GENE);
+}
+
+my $MOTIF_TYPE = "TIGR";;
+if ($OPT{t}) {
+    $MOTIF_TYPE = "TIGR";
+} elsif ($OPT{p}) {
+    $MOTIF_TYPE = "Pfam";
+}
+
+### Read gene IDs
+if (@ARGV) {
+    open(GENE, ">$TMP_GENE") || die;
+    for my $gene (@ARGV) {
+	unless ($gene =~ /^\S+:\S+$/) {
+	    die;
+	}
+	print GENE "<http://mbgd.genome.ad.jp/rdf/resource/gene/$gene>\n";
+    }
+    close(GENE);
+} elsif (! -t) {
+    open(GENE, ">$TMP_GENE") || die;
+    while (<STDIN>) {
+	chomp;
+	unless (/^\S+:\S+$/) {
+	    die;
+	}
+	print GENE "<http://mbgd.genome.ad.jp/rdf/resource/gene/$_>\n";
+    }
+    close(GENE);
+} else {
+    die $USAGE;
+}
+
+### Main
+my @LINE = `cat $TMP_GENE | spang $ENDPOINT $SPARQL $MOTIF_TYPE -a`;
+chomp(@LINE);
+for my $line (@LINE) {
+    my @f = split("\t", $line, -1);
+    for (my $i=0; $i<@f; $i++) {
+    	$f[$i] =~ s/^(.*)\^\^xsd:integer$/$1/g;
+    	$f[$i] =~ s/^"(.*)"$/$1/g;
+    }
+    print join("\t", @f), "\n";
+}

@@ -1,0 +1,57 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER_SET | $PROGRAM -i INPUT_DOM_TABLE
+";
+# This can be merged to dom_merge_stepwie [-f]
+
+use DomRefine::Read;
+use DomRefine::General;
+use DomRefine::Score;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('i:', \%OPT);
+
+my $INPUT_DOM_TABLE;
+if (defined $OPT{i}) {
+    $INPUT_DOM_TABLE = $OPT{i}
+} else {
+    die $USAGE;
+}
+
+### Read input ###
+my %CLUSTER_MEMBERS = ();
+read_cluster_members_from_file($INPUT_DOM_TABLE, \%CLUSTER_MEMBERS);
+
+### Merge ###
+-t and die $USAGE;
+while (my $clusterset = <STDIN>) {
+    chomp($clusterset);
+    my @cluster = split(/[- ,]/, $clusterset);
+    print STDERR "\n";
+    print STDERR "MERGE_TEST: @cluster\n";
+
+    # create a merged cluster
+    my $merged = "";
+    for my $cluster (@cluster) {
+	if ($CLUSTER_MEMBERS{$cluster}) {
+	    $merged .= $CLUSTER_MEMBERS{$cluster};
+	    delete $CLUSTER_MEMBERS{$cluster};
+	} else {
+	    die "$cluster not contained in the input.";
+	}
+    }
+
+    # replace the representative cluster with the merged cluster
+    my $rep_cluster = choose_rep_cluster(@cluster);
+    $CLUSTER_MEMBERS{$rep_cluster} = $merged;
+    
+    print STDERR "MERGED: @cluster\n";
+}
+
+output_cluster_members(\%CLUSTER_MEMBERS);

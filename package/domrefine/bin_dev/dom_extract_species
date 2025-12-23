@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER | $PROGRAM SPECIES_LIST_FILE
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+if (@ARGV != 1) {
+    print STDERR $USAGE;
+    exit 1;
+}
+my $SPECIES_FILE = shift @ARGV;
+
+### Main ###
+my %SPECIES = ();
+open(SPECIES_FILE, $SPECIES_FILE) || die;
+while (<SPECIES_FILE>) {
+    chomp;
+    my @sp = split(/[,\s]/, $_);
+    for my $sp (@sp) {
+	$SPECIES{$sp} = 1;
+    }
+}
+close(SPECIES_FILE);
+
+!@ARGV && -t and die $USAGE;
+while (<STDIN>) {
+    my ($cluster, $gene) = split;
+    my ($sp, $name) = decompose_gene_id($gene);
+    if ($SPECIES{$sp}) {
+	print;
+    }
+}

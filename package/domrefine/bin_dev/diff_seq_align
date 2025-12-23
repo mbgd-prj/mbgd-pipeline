@@ -1,0 +1,35 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM ALIGN.fa ALIGN.fa
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_SORTED1 = define_tmp_file("$PROGRAM.sorted1");
+my $TMP_SORTED2 = define_tmp_file("$PROGRAM.sorted2");
+END {
+    remove_tmp_file($TMP_SORTED1);
+    remove_tmp_file($TMP_SORTED2);
+}
+
+if (@ARGV != 2) {
+    print STDERR $USAGE;
+    exit 1;
+}
+my ($FILE1, $FILE2) = @ARGV;
+
+### Main ###
+my $SEQ1 = fasta_to_sorted_tsv($FILE1);
+my $SEQ2 = fasta_to_sorted_tsv($FILE2);
+if ($SEQ1 ne $SEQ2) {
+    print STDERR "WARNING: inconsistent\n";
+}

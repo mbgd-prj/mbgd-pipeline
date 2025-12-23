@@ -1,0 +1,98 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM [ALIGNMENT]
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Score;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('tB:s:r', \%OPT);
+
+if ($OPT{B}) {
+    read_score_matrix("$ENV{DOMREFINE_DIR}/lib/BLOSUM$OPT{B}");
+}
+
+my $SCORE_THRESHOLD = -0.5;
+if (defined $OPT{s}) {
+    $SCORE_THRESHOLD = $OPT{s};
+}
+
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+END {
+    remove_tmp_file($TMP_ALIGNMENT);
+}
+
+!@ARGV && -t and die $USAGE;
+my ($ALIGNMENT_ORIGINAL, $DCLST) = read_and_save_alignment($TMP_ALIGNMENT);
+my @ALIGNMENT = split("\n>", $ALIGNMENT_ORIGINAL);
+$ALIGNMENT[0] =~ s/^>//;
+chomp(@ALIGNMENT);
+
+### Main ###
+my @score_for_line = dsp_score_dclst($DCLST, $TMP_ALIGNMENT, lines => 1);
+chomp(@score_for_line);
+
+my $count = 0;
+my $n = @score_for_line;
+for (my $i=0; $i<@score_for_line; $i++) {
+    my $gene = $i + 1;
+    if ($score_for_line[$i] <= $SCORE_THRESHOLD) {
+        print STDERR "REMOVED: ", $gene, "\t", $score_for_line[$i], "\n";
+        $count ++;
+    } else {
+        print STDERR $gene, "\t", $score_for_line[$i], "\n";
+        print ">", $ALIGNMENT[$i], "\n";
+    }
+}
+print STDERR "Removed $count out of $n sequences\n";
+
+################################################################################
+### Function ###################################################################
+################################################################################
+
+sub read_and_save_alignment {
+    my ($tmp_alignment) = @_;
+
+    my $alignment_original = "";
+    my $alignment = "";
+    my $dclst = "";
+
+    my $i = 0;
+    my $accum = 0;
+    while (<>) {
+        $alignment_original .= $_;
+        chomp;
+        if (/^>/) {
+            if (/^>(\d+)$/) {
+                my $cluster = $1;
+                if ($accum) {
+                    $dclst .= "$accum\n";
+                }
+                my $gene = $i + 1;
+                $dclst .= "$cluster $gene 0 1 ";
+                $alignment .= ">$gene\n";
+                $i++;
+                $accum = 0;
+            } else {
+                die;
+            }
+        } else {
+            $alignment .= "$_\n";
+            s/-//g;
+            $accum += length;
+        }    
+    }
+    $dclst .= "$accum\n";
+
+    save_contents($alignment, $tmp_alignment);
+
+    return ($alignment_original, $dclst);
+}

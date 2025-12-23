@@ -1,0 +1,42 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat DOM_TABLE | $PROGRAM
+-g: also output gene number
+";
+
+my %OPT;
+getopts('g', \%OPT);
+
+my %SIZE = ();
+my %CLUSTER = ();
+!@ARGV && -t and die $USAGE;
+while (<>) {
+    chomp;
+    my ($cluster, $gene) = split;
+    $SIZE{$cluster}++;
+    if ($OPT{g}) {
+	$CLUSTER{$cluster}{$gene}++;
+    }
+}
+my @CLUSTER = keys %SIZE;
+
+my %GENE_NUM = ();
+if ($OPT{g}) {
+    for my $cluster (@CLUSTER) {
+	my @gene = keys %{$CLUSTER{$cluster}};
+	$GENE_NUM{$cluster} = @gene;
+    }
+}
+
+my @CLUSTER_SORTED_BY_SIZE = sort { $SIZE{$b} <=> $SIZE{$a} } @CLUSTER;
+for my $cluster (@CLUSTER_SORTED_BY_SIZE) {
+    if ($OPT{g}) {
+	print $cluster, "\t", $SIZE{$cluster}, "\t", $GENE_NUM{$cluster}, "\n";
+    } else {
+	print $cluster, "\t", $SIZE{$cluster}, "\n";
+    }
+}

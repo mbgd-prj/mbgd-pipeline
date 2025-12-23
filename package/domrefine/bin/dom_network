@@ -1,0 +1,375 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use POSIX;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER_SET | $PROGRAM
+graph of cluster set
+-p: print in patterns
+-P: print in patterns (detail)
+-t TITLE
+-w: weighted edges
+-v: vertical edges
+-D: detailed text
+-s: simple text
+-l: links
+-n: number of genes for each link
+-f FONT_SIZE (default: 10)
+-g: graphics now
+-G: save graphics
+-h: hide HomCluster ID
+-R: output repeat too
+-o: list of organisms linked (uniq)
+-O: list of organisms linked
+";
+# -d DIR
+# -e CLUSTER,TO,EMPHASIZE
+# -r RATIO
+
+use DomRefine::Read;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('pPt:wvDslnf:ghGd:e:r:RoO', \%OPT);
+my $DIR = $OPT{d} || ".";
+
+my $FONT_SIZE = $OPT{f} || 10;
+my $TITLE = $OPT{t} || "";
+my $SUFFIX = "";
+if (defined $ARGV[0]) {
+    $SUFFIX = ".$ARGV[0]";
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_OUTPUT = define_tmp_file("$PROGRAM.output");
+my $TMP_PNG = "$PROGRAM$SUFFIX.png";
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_OUTPUT);
+}
+
+my %ANNOTATION = ();
+get_annotation("$DIR/cluster.descr", \%ANNOTATION);
+my %HOMCLUSTER = ();
+get_annotation("$DIR/cluster.homcluster", \%HOMCLUSTER);
+
+my %EMPHASIZE = ();
+if ($OPT{e}) {
+    my $clusters_to_emphasize = $OPT{e};
+    my @cluster = split(",", $clusters_to_emphasize);
+    for my $cluster (@cluster) {
+	$EMPHASIZE{$cluster} = 1;
+    }
+}
+
+my %GRAY = ();
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+my @cluster = get_clusters($TMP_INPUT);
+
+my %cluster = ();
+my %domain = ();
+get_dclst_structure($TMP_INPUT, \%cluster, \%domain);
+
+my %cluster_count = ();
+for my $cluster (keys %cluster) {
+    my @genes = keys %{$cluster{$cluster}};
+    $cluster_count{$cluster} = scalar(@genes);
+}
+
+my %cluster_adjacency = ();
+get_adjacency_information(\%domain, \%cluster_adjacency);
+my %adjacent_organism = ();
+get_adjacent_organism(\%domain, \%adjacent_organism);
+
+if ($OPT{p}) {
+    my @out = get_patterns(\%cluster_adjacency, @cluster);
+    my $n_cluster = @cluster;
+    print $n_cluster, "\t", join(" ", @out), "\n";
+} elsif ($OPT{P}) {
+    my @out = get_patterns_detail(\%cluster_adjacency, @cluster);
+    my $n_cluster = @cluster;
+    print $n_cluster, "\t", join(" ", @out), "\n";
+} elsif ($OPT{D}) {
+    print_in_text(\%cluster_adjacency, \%ANNOTATION, @cluster);
+} elsif ($OPT{l}) {
+    print_links(\%cluster_adjacency, \%adjacent_organism, %OPT);
+} elsif ($OPT{s}) {
+    print_in_simple_text(\@cluster, \%cluster_count, \%cluster_adjacency);
+} else {
+#     print_in_gml_format(\@cluster, \%cluster_count, \%cluster_adjacency);
+    print_in_dot_format(\%cluster_count, \%cluster_adjacency, $TMP_OUTPUT);
+    if ($OPT{G} || $OPT{g}) {
+	system "dot -Tpng $TMP_OUTPUT > $TMP_PNG";
+	my $status = $? >> 8;
+	if ($status == 0) {
+	    if ($OPT{g}) {
+		system "display $TMP_PNG";
+	    }
+	}
+    } else {
+	system "cat $TMP_OUTPUT";
+    }
+}
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+
+sub print_links {
+    my ($r_cluster_adjacency, $r_adjacent_organism, %opt) = @_;
+
+    for my $cluster1 (sort {$a cmp $b} keys %{$r_cluster_adjacency}) {
+	for my $cluster2 (sort {$a cmp $b} keys %{${$r_cluster_adjacency}{$cluster1}}) {
+	    if ($OPT{R}) {
+	    } else {
+		next if $cluster1 eq $cluster2; # remove repet
+	    }
+
+	    print "$cluster1-$cluster2";
+	    if ($opt{n}) {
+		print "\t", ${$r_cluster_adjacency}{$cluster1}{$cluster2};
+	    }
+	    if ($opt{o}) {
+		my @organism_uniq = sort keys %{${$r_adjacent_organism}{$cluster1}{$cluster2}};
+		print "\t", join(",", @organism_uniq);
+	    }
+	    if ($opt{O}) {
+		my @organism_uniq = sort keys %{${$r_adjacent_organism}{$cluster1}{$cluster2}};
+		my @organism = ();
+		for my $org (@organism_uniq) {
+		    my $n = ${$r_adjacent_organism}{$cluster1}{$cluster2}{$org};
+		    for (my $i=0; $i<$n; $i++) {
+			push @organism, $org;
+		    }
+		}
+		print "\t", join(",", @organism);
+	    }
+	    print "\n";
+	}
+    }
+}
+
+sub print_in_dot_format {
+    my ($r_cluster_count, $r_cluster_adjacency, $tmp_output) = @_;
+
+    my %dead_end = ();
+    # check_dead_end($r_cluster_count, $r_cluster_adjacency, \%dead_end);
+
+    check_adjacency($r_cluster_count, $r_cluster_adjacency);
+
+    open(OUT, ">$TMP_OUTPUT") || die;
+    print_header_in_dot_format();
+    print OUT "\n";
+    print_edges_in_dot_format($r_cluster_adjacency);
+    print OUT "\n";
+    print_nodes_in_dot_format($r_cluster_count, \%dead_end);
+    print OUT "\n";
+    print OUT "}\n";
+    close(OUT);
+}
+
+sub print_header_in_dot_format {
+    print OUT "digraph sample {\n";
+    print OUT "\tgraph [";
+    print OUT "labelloc = t";
+    if (! $OPT{v}) {
+	print OUT ", rankdir = LR";
+    }
+    print OUT ", label = \"", $TITLE, "\"";
+#     if ($OPT{s}) {
+# 	print OUT ", ranksep = 0.1, nodesep = 0.1";
+#     }
+    print OUT "];\n";
+}
+
+sub print_edges_in_dot_format {
+    my ($r_cluster_adjacency) = @_;
+
+    for my $cluster1 (keys %{$r_cluster_adjacency}) {
+	for my $cluster2 (keys %{${$r_cluster_adjacency}{$cluster1}}) {
+	    # remove repet
+	    if ($cluster1 eq $cluster2) {
+		next;
+	    }
+	    print OUT "\t$cluster1 -> $cluster2 ";
+	    print OUT "[";
+	    print OUT "label = ${$r_cluster_adjacency}{$cluster1}{$cluster2}";
+	    print OUT ", arrowhead = vee";
+# 	    if ($OPT{s}) {
+# 		print OUT ", fontsize = $FONT_SIZE";
+# 		print OUT ", arrowsize = 0.7";
+# 	    }
+	    if ($OPT{w}) {
+		print OUT ", weight = ${$r_cluster_adjacency}{$cluster1}{$cluster2}";
+	    }
+	    print OUT "];\n";
+	}
+    }
+}
+
+sub print_nodes_in_dot_format {
+    my ($r_cluster_count, $r_dead_end) = @_;
+
+#     for my $cluster (@{$r_cluster}) {
+    for my $cluster (keys %{$r_cluster_count}) {
+	my $cluster_label = $cluster;
+	if ($cluster =~ /^(\d+)\.\d+$/) {
+	    $cluster_label = $1;
+	}
+	my $annotation = annotation_with_newline($cluster);
+	my $homcluster = $HOMCLUSTER{$cluster} || "";
+	if ($OPT{h}) {
+	    $homcluster = "";
+	}
+	print OUT "\t$cluster [";
+# 	if (${$r_cluster_count}{$cluster} > 1) {
+	# if (${$r_dead_end}{$cluster}) { #?
+	if (0) {
+	    print OUT "shape = box,";
+# 	    print OUT "shape = point";
+# 	    print OUT "shape = plaintext";
+# 	    print OUT "shape = circle";
+	    print OUT "height = ", 0.1;
+	    print OUT ", width = ", 0.1;
+	    print OUT ", label = \"${homcluster} [$cluster_label]\"";
+# 	    print OUT ", label = \"Cluster$cluster  \\n(N=${$r_cluster_count}{$cluster})\"";
+# 	    print OUT ", fontsize = 11";
+	} else {
+	    print OUT "shape = box";
+	    print OUT ", label = \"${homcluster} [$cluster_label]\\n${annotation}Nseq=${$r_cluster_count}{$cluster}\"";
+# 	    print OUT ", label = \"Cluster${cluster}  \\n(N=${$r_cluster_count}{$cluster})\\n${annotation}\"";
+	}
+# 	if ($OPT{s}) {
+# 	    print OUT ", fontsize = $FONT_SIZE";
+# 	}
+# 	print OUT ", height = ", 1.6;
+# 	print OUT ", height = ", log10(${$r_cluster_count}{$cluster});
+	if ($EMPHASIZE{$cluster}) {
+	    print OUT ", color = red";
+	    print OUT ", fontcolor = red";
+	}
+	if ($GRAY{$cluster}) {
+	    print OUT ", color = gray";
+	    print OUT ", fontcolor = gray";
+	}
+	print OUT "];\n";
+    }
+}
+
+sub annotation_with_newline {
+    my ($cluster) = @_;
+
+    my $annotation = "";
+    if ($ANNOTATION{$cluster}) {
+	$annotation = $ANNOTATION{$cluster};
+	$annotation =~ s/(.{100}).*/$1.../;
+	$annotation =~ s/(.{25})/$1\\l/g;
+	$annotation =~ s/$/\\l/;
+    }
+
+    return $annotation;
+}
+
+sub check_dead_end {
+    my ($r_cluster_count, $r_cluster_adjacency, $r_dead_end) = @_;
+
+    for my $cluster1 (keys %{$r_cluster_adjacency}) {
+	for my $cluster2 (keys %{${$r_cluster_adjacency}{$cluster1}}) {
+	    my $edge = ${$r_cluster_adjacency}{$cluster1}{$cluster2};
+	    my $node1 = ${$r_cluster_count}{$cluster1};
+	    my $node2 = ${$r_cluster_count}{$cluster2};
+
+	    ### check for cluster1 ###
+	    # initialize as dead end
+	    if (! defined ${$r_dead_end}{$cluster1}) {
+		${$r_dead_end}{$cluster1} = 1;
+	    }
+	    # cancel dead end
+	    if ($edge < $node1) {
+		${$r_dead_end}{$cluster1} = 0;
+	    } elsif ($edge == $node1) {
+	    } else {
+		die;
+	    }
+
+	    ### check for cluster2 ###
+	    # initialize as dead end
+	    if (! defined ${$r_dead_end}{$cluster2}) {
+		${$r_dead_end}{$cluster2} = 1;
+	    }
+	    # cancel dead end
+	    if ($edge < $node2) {
+		${$r_dead_end}{$cluster2} = 0;
+	    } elsif ($edge == $node2) {
+	    } else {
+		die;
+	    }
+	}
+    }
+}
+
+sub check_adjacency {
+    my ($r_cluster_count, $r_cluster_adjacency) = @_;
+
+    my @delete_list = ();
+    my $suffix = 1;
+    for my $cluster1 (keys %{$r_cluster_adjacency}) {
+	for my $cluster2 (keys %{${$r_cluster_adjacency}{$cluster1}}) {
+	    my $edge = ${$r_cluster_adjacency}{$cluster1}{$cluster2};
+	    my $node1 = ${$r_cluster_count}{$cluster1};
+	    my $node2 = ${$r_cluster_count}{$cluster2};
+
+	    my $ratio = $edge/($node1+$node2);
+	    printf STDERR "$ratio\t$node1 - ($edge) - $node2\n";
+	    # if ($ratio < 0.005) {
+	    # if ($ratio < 0.01) {
+	    if (defined $OPT{r} && $ratio < $OPT{r}) {
+		push @delete_list, "$cluster1,$cluster2";
+		${$r_cluster_adjacency}{$cluster1}{"${cluster2}.$suffix"} = $edge;
+		${$r_cluster_adjacency}{"${cluster1}.$suffix"}{$cluster2} = $edge;
+		${$r_cluster_count}{"${cluster1}.$suffix"} = $node1;
+		${$r_cluster_count}{"${cluster2}.$suffix"} = $node2;
+		$GRAY{"${cluster1}.$suffix"} = 1;
+		$GRAY{"${cluster2}.$suffix"} = 1;
+		# $EMPHASIZE{"${cluster1}"} = 1;
+		# $EMPHASIZE{"${cluster2}"} = 1;
+		$suffix ++;
+	    }
+	}
+    }
+    for my $edge_to_delete (@delete_list) {
+	my ($cluster1, $cluster2) = split(",", $edge_to_delete);
+	delete ${$r_cluster_adjacency}{$cluster1}{$cluster2};
+    }
+}
+
+sub print_in_gml_format {
+    my ($r_cluster, $r_cluster_count, $r_cluster_adjacency) = @_;
+
+    print "graph [\n";
+    print "\tdirected 1\n";
+    for my $cluster (@{$r_cluster}) {
+	print "\tnode [\n";
+	print "\t\tid $cluster\n";
+	print "\t\tlabel \"[$cluster]\n${$r_cluster_count}{$cluster}\"\n";
+	print "\t\tsize2 ${$r_cluster_count}{$cluster}\n";
+	print "\t]\n";
+    }
+    print "\n";
+    for my $cluster1 (keys %{$r_cluster_adjacency}) {
+	for my $cluster2 (keys %{${$r_cluster_adjacency}{$cluster1}}) {
+	    print "\tedge [\n";
+	    print "\t\tsource $cluster1\n";
+	    print "\t\ttarget $cluster2\n";
+	    print "\t\tlabel \"${$r_cluster_adjacency}{$cluster1}{$cluster2}\"\n";
+	    print "\t]\n";
+	}
+    }
+    print "]\n";
+}

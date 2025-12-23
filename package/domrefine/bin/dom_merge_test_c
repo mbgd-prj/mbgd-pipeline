@@ -1,0 +1,58 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-r: align by region
+";
+# -D SEQ_DB
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Score;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('ro:e:D:', \%OPT);
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+if (defined $OPT{o}) {
+    set_open_gap_penalty($OPT{o});
+    set_terminal_open_gap_penalty($OPT{o});
+}
+if (defined $OPT{e}) {
+    set_extention_gap_penalty($OPT{e});
+    set_terminal_extention_gap_penalty($OPT{e});
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+my $start_time = time;
+
+print STDERR "Score separate ..\n";
+my ($score_before, $n_aa) = score_c($TMP_INPUT, region => $OPT{r});
+print STDERR "\nScore merged ..\n";
+my ($score, $n_seq, $n_aa2) = score_one_c(merge_all($DCLST), region => $OPT{r});
+print STDERR "\nScore between..\n";
+my ($score_between) = score_one_c($DCLST, region => $OPT{r}, between => 1);
+
+my $normalized_score_change = ($score - $score_before) /($n_seq*$n_aa2);
+print "$normalized_score_change = ($score - $score_before) /($n_seq*$n_aa2)";
+print "\t", $score_between;
+print "\n";
+
+my $end_time = time;
+printf STDERR "merge_test: %d sec\n", $end_time - $start_time;

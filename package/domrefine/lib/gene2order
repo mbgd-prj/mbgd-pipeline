@@ -1,0 +1,63 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM GENE_ID ...
+       cat GENE_ID | $PROGRAM
+";
+
+use DomRefine::Read;
+
+my %OPT;
+getopts('', \%OPT);
+
+### Settings
+my $ENDPOINT = $ENV{DOMREFINE_ENDPOINT} || die;
+
+my $TMP_GENE = define_tmp_file("$PROGRAM");
+END {
+    remove_tmp_file($TMP_GENE);
+}
+
+### Read gene IDs
+if (@ARGV) {
+    open(GENE, ">$TMP_GENE") || die;
+    for my $gene (@ARGV) {
+	unless ($gene =~ /^\S+:\S+$/) {
+	    die;
+	}
+	print GENE "<http://mbgd.genome.ad.jp/rdf/resource/gene/$gene>\n";
+    }
+    close(GENE);
+} elsif (! -t) {
+    open(GENE, ">$TMP_GENE") || die;
+    while (<STDIN>) {
+	chomp;
+	unless (/^\S+:\S+$/) {
+	    die;
+	}
+	print GENE "<http://mbgd.genome.ad.jp/rdf/resource/gene/$_>\n";
+    }
+    close(GENE);
+} else {
+    die $USAGE;
+}
+
+### Main
+my @LINE = `cat $TMP_GENE | spang $ENDPOINT -S 1 -P mbgd:geneOrder`;
+chomp(@LINE);
+for my $line (@LINE) {
+    # my @f = split("\t", $line, -1);
+    # for (my $i=0; $i<@f; $i++) {
+    # 	$f[$i] =~ s/^(.*)\^\^xsd:integer$/$1/g;
+    # 	$f[$i] =~ s/^"(.*)"$/$1/g;
+    # }
+    # print join("\t", @f), "\n";
+    if ($line =~ /^<\S+\/gene\/(\S+)>\t"(\d+)"\S+$/) {
+	print "$1\t$2\n";
+    } else {
+	print STDERR "$line\n";
+    }
+}

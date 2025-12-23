@@ -1,0 +1,61 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-r: align by region
+-1: calculate on one alignment
+-b: also calculate score between clusters (with -1)
+";
+# -e GAP_EXT
+# -o GAP_OPEN
+# -i SPECIFINED_LINE
+# -D SEQ_DB
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Refine;
+use DomRefine::Score;
+
+### Settings ###
+my %OPT;
+getopts('r1be:o:i:D:', \%OPT);
+
+if ($OPT{D}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{D};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+if (defined $OPT{o}) {
+    set_open_gap_penalty($OPT{o});
+}
+if (defined $OPT{e}) {
+    set_extention_gap_penalty($OPT{e});
+}
+
+### Main ###
+my $START_TIME = time;
+
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+if ($DCLST !~ /\S/) {
+    exit 1;
+}
+
+if ($OPT{1}) {
+    my @score = score_one_c($DCLST, region => $OPT{r}, between => $OPT{b}, i => $OPT{i});
+    print join("\t", @score), "\n";
+} else {
+    my ($score, $n_aa) = score_c($TMP_INPUT, region => $OPT{r});
+    my $n_seq = extract_genes($DCLST);
+    print "$score\t$n_seq\t$n_aa\n";
+}
+
+my $END_TIME = time;
+printf STDERR "dom_score_c: %d sec\n", $END_TIME - $START_TIME;

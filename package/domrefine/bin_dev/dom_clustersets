@@ -1,0 +1,27 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::General;
+use DomRefine::Refine;
+
+my %OPT;
+getopts('mn', \%OPT);
+
+!@ARGV && -t and die $USAGE;
+
+my %GENE_TO_CLUSTERS = ();
+while (<>) {
+    chomp;
+    my ($cluster, $gene) = split;
+    add_group_member(\%GENE_TO_CLUSTERS, $gene, $cluster);
+}
+
+my %MODULE_TO_CLUSTER = ();
+link_modules(\%GENE_TO_CLUSTERS, \%MODULE_TO_CLUSTER);
+print_module_members(\%MODULE_TO_CLUSTER, %OPT);

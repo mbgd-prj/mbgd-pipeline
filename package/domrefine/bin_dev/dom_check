@@ -1,0 +1,113 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+check incorrect domain numbering and incorrect domain length (<=0)
+-b: check begin position
+-d: check distance between adjacent domains
+-e: detect end_position < sequence_length
+-l: detect sequence_length < end_position
+-t: trim end_position to sequence_length (specify with -l)
+";
+
+use DomRefine::Read;
+
+my %OPT;
+getopts('bdlet', \%OPT);
+
+### Read domains ###
+-t and die $USAGE;
+my %DOMAIN = ();
+while (<STDIN>) {
+    chomp;
+    my ($cluster, $gene, $domain, $begin, $end) = split;
+    if (defined $DOMAIN{$gene}{$domain}) {
+        print STDERR "redundant domain: ", $DOMAIN{$gene}{$domain}{line}, "\n";
+        print STDERR "redundant domain: ", $_, "\n";
+    } else {
+        $DOMAIN{$gene}{$domain}{begin} = $begin;
+        $DOMAIN{$gene}{$domain}{end} = $end;
+        $DOMAIN{$gene}{$domain}{cluster} = $cluster;
+        $DOMAIN{$gene}{$domain}{line} = $_;
+    }
+}
+
+# get seq
+my @GENE = keys %DOMAIN;
+my %SEQ = ();
+if ($OPT{e} || $OPT{l}) {
+    read_seq(\%SEQ, \@GENE);
+}
+
+### Check domains ###
+for my $gene (sort {$a cmp $b} keys %DOMAIN) {
+    my @domains = sort {$a<=>$b} keys %{$DOMAIN{$gene}};
+    for (my $i=0; $i<@domains; $i++) {
+        my $line = $DOMAIN{$gene}{$domains[$i]}{line};
+        my $cluster = $DOMAIN{$gene}{$domains[$i]}{cluster};
+        my $begin = $DOMAIN{$gene}{$domains[$i]}{begin};
+        my $end = $DOMAIN{$gene}{$domains[$i]}{end};
+        my $gene_len;
+        if ($OPT{e} || $OPT{l}) {
+            $gene_len = get_gene_length(\%SEQ, $gene);
+        }
+        # domain number
+        if (@domains == 1) {
+            if ($domains[0] != 0) {
+                print STDERR "only one domain: $line\n";
+            }
+        } else {
+            if ($domains[$i] != $i+1) {
+                print STDERR $i+1, "th domain number is incorrect: $line\n";
+            }
+        }
+        # 1st domain
+        if ($OPT{b}) {
+            if ($i == 0) {
+                if ($begin != 1) {
+                    print STDERR "begin is not 1: $line\n";
+                }
+            }
+        }
+        # distance
+        if ($OPT{d}) {
+            if ($i > 0) {
+                my $line_prev_domain = $DOMAIN{$gene}{$domains[$i-1]}{line};
+                my $prev_domain_end = $DOMAIN{$gene}{$domains[$i-1]}{end};
+                if ($prev_domain_end + 1 != $begin) {
+                    print STDERR "distance = ", $begin - $prev_domain_end -1, "\n";
+                    print STDERR ">$line_prev_domain\n";
+                    print STDERR ">$line\n";
+                }
+            }
+        }
+        # last domain
+        if ($OPT{e}) {
+            if ($i == $#domains) {
+                if ($end < $gene_len) {
+                    print STDERR "gene end is smaller than gene length($gene_len): $line\n";
+                }
+            }
+        }
+        # length
+        if ($OPT{l}) {
+            if ($end > $gene_len) {
+                print STDERR "domain end is larger than gene length($gene_len)";
+                if ($OPT{t}) {
+                    $end = $gene_len;
+                    print STDERR ", trimmed";
+                }
+                print STDERR ": $line\n";
+            }
+        }
+        # domain length
+        if ($begin > $end) {
+            print STDERR "domain length is incorrect, omitted: $line\n";
+        } else {
+            print "$cluster $gene $domains[$i] $begin $end\n";
+        }
+    }
+}

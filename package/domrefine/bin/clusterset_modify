@@ -1,0 +1,110 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER_SET | $PROGRAM -i CLUSTER -o SUB_DIR
+";
+
+use DomRefine::Read;
+use DomRefine::General;
+use DomRefine::Score;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('i:o:m:', \%OPT);
+
+my $CLUSTER;
+if ($OPT{i}) {
+    $CLUSTER = "$OPT{i}";
+} else {
+    die;
+}
+my $SUB_DIR;
+if ($OPT{o}) {
+    $SUB_DIR = "$OPT{o}";
+} else {
+    die;
+}
+my $MARK = $OPT{m} || "";
+
+# my $TMP_OUTPUT = define_tmp_file("$PROGRAM.output");
+# END {
+#     remove_tmp_file($TMP_OUTPUT);
+# }
+
+# system "cp $CLUSTER $TMP_OUTPUT";
+
+### Read input ###
+my %CLUSTER_MEMBERS = ();
+open(INPUT_DOM_TABLE, $CLUSTER) || die;
+while (my $line = <INPUT_DOM_TABLE>) {
+    chomp($line);
+    if ($line =~ /^(\S+)\s(\S.*)/) {
+	my ($cluster, $member) = ($1, $2);
+	if (! defined $CLUSTER_MEMBERS{$cluster}) {
+	    $CLUSTER_MEMBERS{$cluster} = "$member\n";
+	} else {
+	    $CLUSTER_MEMBERS{$cluster} .= "$member\n";
+	}
+    } else {
+	print STDERR "invalid line: $line";
+    }
+}
+close(INPUT_DOM_TABLE);
+
+### Main ###
+my %MODIFIED = ();
+my $count = 0;
+-t and die $USAGE;
+while (<STDIN>) {
+    chomp;
+    my ($cluster_set) = split("\t", $_);
+    my @cluster = split(/[-,\s]/, $cluster_set);
+
+    $count ++;
+    print STDERR "($count) $_\n";
+    if (my @hit = grep { $MODIFIED{$_} } @cluster) {
+	print STDERR "$hit[0] is already changed\n";
+	next;
+    }
+    if (my @hit = grep { $MODIFIED{$_} } @cluster) {
+	print STDERR "$hit[0] is already changed\n";
+	next;
+    }
+
+    ### replace ###
+    my $dclst_new = `cat $SUB_DIR/$cluster_set.out`;
+    $dclst_new =~ s/^(\S+) /${1}$MARK /gm;
+    # my $dclst_others = extract_dclst_compl($TMP_OUTPUT, @cluster);
+    # save_contents($dclst_others . $dclst_new, $TMP_OUTPUT);
+    for my $cluster (@cluster) {
+    	delete $CLUSTER_MEMBERS{$cluster};
+    }
+    print $dclst_new;
+
+    for (my $i=0; $i<@cluster; $i++) {
+	$MODIFIED{$cluster[$i]} = 1;
+    }
+
+    ### log
+    my @modified = ();
+    for (my $i=0; $i<@cluster; $i++) {
+	$modified[$i] = "$cluster[$i]$MARK";
+    }
+    print STDERR join("-", @cluster), "\tmodified_to\t", join("-", @modified), "\n";
+}
+
+# system "cat $TMP_OUTPUT";
+
+### Output result ###
+for my $cluster (sort { $a cmp $b } keys(%CLUSTER_MEMBERS)) {
+    my $members = $CLUSTER_MEMBERS{$cluster};
+    chomp($members);
+    my @member = split("\n", $members);
+    for my $member (@member) {
+	print "$cluster $member\n";
+    }
+}

@@ -1,0 +1,26 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM [CLUSTER_FILE]
+-a: all
+";
+
+use DomRefine::Read;
+use DomRefine::Motif;
+
+my %OPT;
+getopts('a', \%OPT);
+
+my @GENE = ();
+!@ARGV && -t and die $USAGE;
+while (<>) {
+    chomp;
+    my ($culster, $gene) = split;
+    push @GENE, $gene;
+}
+
+my ($DBH, $DBH_ACCUM) = (get_dbh("mbgd"), get_dbh("mbgd_accum"));
+check_hom_mysql(\@GENE, dbh => $DBH, dbh_accum => $DBH_ACCUM, all => $OPT{a});

@@ -1,0 +1,51 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM MOTIF_ID ...
+";
+
+use DomRefine::Read;
+
+my %OPT;
+getopts('', \%OPT);
+
+### Settings
+my $ENDPOINT = $ENV{DOMREFINE_ENDPOINT} || die;
+my $SPARQL = "mbgd2016/get_annotation";
+my $TMP_FILE = define_tmp_file("$PROGRAM");
+END {
+    remove_tmp_file($TMP_FILE);
+}
+
+### Read
+if (@ARGV) {
+    open(TMP_FILE, ">$TMP_FILE") || die;
+    for my $motif (@ARGV) {
+	print TMP_FILE "motif:$motif\n";
+    }
+    close(TMP_FILE);
+} elsif (! -t) {
+    open(TMP_FILE, ">$TMP_FILE") || die;
+    while (<STDIN>) {
+	chomp;
+	print TMP_FILE "motif:$_\n";
+    }
+    close(TMP_FILE);
+} else {
+    die $USAGE;
+}
+
+### Main
+my @LINE = `cat $TMP_FILE | spang $ENDPOINT $SPARQL -a`;
+chomp(@LINE);
+for my $line (@LINE) {
+    my @f = split("\t", $line, -1);
+    for (my $i=0; $i<@f; $i++) {
+    	$f[$i] =~ s/^"(.*)"$/$1/g;
+    	$f[$i] =~ s/^motif:(.*)$/$1/g;
+    }
+    print join("\t", @f), "\n";
+}

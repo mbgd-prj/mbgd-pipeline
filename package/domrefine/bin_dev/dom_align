@@ -1,0 +1,60 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+-r: align region only
+-R: align only region
+-D: domain by domain
+-u: unset DOMREFINE_READ_ALIGNMENT_CACHE
+-U: unset DOMREFINE_WRITE_ALIGNMENT_CACHE
+";
+# -d SEQ_DB
+# -p ALIGNER
+
+use DomRefine::Read;
+use DomRefine::Align;
+
+### Settings ###
+my %OPT;
+getopts('rRDuUd:p:', \%OPT);
+
+if ($OPT{u}) {
+    $ENV{DOMREFINE_READ_ALIGNMENT_CACHE} = 0;
+}
+if ($OPT{U}) {
+    $ENV{DOMREFINE_WRITE_ALIGNMENT_CACHE} = 0;
+}
+
+if ($OPT{d}) {
+    $ENV{'DOMREFINE_SEQ_DB'} = $OPT{d};
+}
+
+if ($OPT{p}) {
+    $ENV{DOMREFINE_ALIGNER} = $OPT{p};
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+my $TMP_ALIGNMENT_ERR = define_tmp_file("$PROGRAM.alignment.err");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file($TMP_ALIGNMENT_ERR);
+}
+
+### Main ###
+my $START_TIME = time;
+
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my @GENE = ();
+create_alignment($TMP_INPUT, \@GENE, $TMP_ALIGNMENT, region => $OPT{r}, REGION => $OPT{R}, DOMAIN => $OPT{D});
+
+system "cat $TMP_ALIGNMENT";
+
+my $END_TIME = time;
+printf STDERR "dom_align: %d sec\n", $END_TIME - $START_TIME;

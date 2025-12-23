@@ -1,0 +1,34 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Tree;
+
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my $TREE = new_tree($TMP_INPUT);
+
+my @NODE = $TREE->get_root_node->get_all_Descendents;
+if (@NODE >= 3) {
+    find_min_tree_fast($TREE);
+} else {
+    # print STDERR "WARNING: the input tree has only ", scalar(@NODE), " nodes.\n";
+}
+
+print_tree(\$TREE);

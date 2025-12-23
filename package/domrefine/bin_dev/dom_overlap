@@ -1,0 +1,96 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat CLUSTER | $PROGRAM REFERENCE
+-1: one-to-one relationship
+-c THRESHOLD_FOR_COMMON
+-s: summary
+-a: ovelap of amino acids
+-h: ovelap with homcluster
+-m: only max pair
+";
+# -l CLUSTER_LINK: check split of reference at each link
+# -o r_over
+# -O r_over2
+# -t r_over_t
+# -T r_over_T
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Motif;
+
+### Settings ###
+my %OPT;
+getopts('1o:O:t:T:c:C:sahml:', \%OPT);
+
+if (@ARGV != 1) {
+    print STDERR $USAGE;
+    exit 1;
+}
+my $REFERENCE = $ARGV[0];
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Read clusters ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+my %INPUT_DOMAIN = ();
+my %INPUT = ();
+get_dclst_structure($TMP_INPUT, \%INPUT, \%INPUT_DOMAIN);
+my %INPUT_COUNT = ();
+get_cluster_count(\%INPUT_COUNT, \%INPUT);
+
+my %REFERENCE_DOMAIN = ();
+my %REFERENCE = ();
+get_dclst_structure($REFERENCE, \%REFERENCE, \%REFERENCE_DOMAIN);
+my %REFERENCE_COUNT = ();
+get_cluster_count(\%REFERENCE_COUNT, \%REFERENCE);
+
+### Comparison ###
+my %REF_CLUS = ();
+get_overlaps(\%INPUT_DOMAIN, \%REFERENCE_DOMAIN, \%REF_CLUS,
+	     r_over => $OPT{o}, r_over2 => $OPT{O}, r_over_t => $OPT{t}, r_over_T => $OPT{T});
+
+if ($OPT{m}) {
+    print_cluster_overlap_max(\%REF_CLUS, \%INPUT_COUNT, \%REFERENCE_COUNT);
+} elsif ($OPT{s}) {
+    my @threshold = (1, 0.9, 0.8, 0.7, 0.6);
+    my @count = (0, 0, 0, 0, 0);
+    for my $motif (sort {$a cmp $b} keys %REF_CLUS) {
+	for my $cluster (keys %{$REF_CLUS{$motif}}) {
+	    my $r_common = $REF_CLUS{$motif}{$cluster}{common} / max($INPUT_COUNT{$cluster}, $REFERENCE_COUNT{$motif});
+	    for (my $i=0; $i<@threshold; $i++) {
+		if ($r_common >= $threshold[$i]) {
+		    $count[$i]++
+		}
+	    }
+	}
+    }
+    print join("\t", "r_common>=", @threshold), "\n";
+    print join("\t", "n_clusters", @count), "\n";
+} elsif ($OPT{a}) {
+    my ($overlap_cluster, $overlap_member, $aa_overlap_sum) = calc_overlap_aa(\%REF_CLUS, \%INPUT_COUNT, \%REFERENCE_COUNT, r_com => $OPT{c});
+    my $aa_domain = calc_total_aa(\%INPUT_DOMAIN);
+    print "overlap_cluster=$overlap_cluster, overlap_member=$overlap_member, overlap_aa=$aa_overlap_sum, total_aa=$aa_domain, coverage=", $aa_overlap_sum/$aa_domain ,"\n";
+} elsif ($OPT{h}) {
+    print_overlap_with_homcluster(\%REF_CLUS, \%INPUT_COUNT, \%REFERENCE_COUNT);
+} elsif ($OPT{l}) {
+    open(LIST, $OPT{l}) || die;
+    while (<LIST>) {
+	chomp;
+	my ($cluster_pair) = split;
+	my @result = get_overlaps_check(\%INPUT_DOMAIN, \%REFERENCE_DOMAIN, $cluster_pair);
+	print join("\t", $_, @result), "\n";
+    }
+    close(LIST);
+} else {
+    print_cluster_overlaps(\%REF_CLUS, \%INPUT_COUNT, \%REFERENCE_COUNT
+			   , r_com => $OPT{c}, r_com2 => $OPT{C}, one2one => $OPT{1});
+}

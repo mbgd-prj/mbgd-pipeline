@@ -1,0 +1,60 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+my $TMP_ALIGNMENT2 = define_tmp_file("$PROGRAM.alignment2");
+my $TMP_PHYLIP = define_tmp_file("$PROGRAM.phylip");
+
+my $TMP_SUFFIX = "$PROGRAM.$ENV{HOSTNAME}.$$";
+my $TMP_PARSIMONY_TREE = "RAxML_parsimonyTree.$TMP_SUFFIX";
+my $TMP_LOG = "RAxML_log.$TMP_SUFFIX";
+my $TMP_RESULT = "RAxML_result.$TMP_SUFFIX";
+my $TMP_INFO = "RAxML_info.$TMP_SUFFIX";
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file($TMP_ALIGNMENT2);
+    remove_tmp_file($TMP_PHYLIP);
+
+    remove_tmp_file($TMP_PARSIMONY_TREE);
+    remove_tmp_file($TMP_LOG);
+    remove_tmp_file($TMP_RESULT);
+    remove_tmp_file($TMP_INFO);
+}
+
+### Main ###
+-t and die $USAGE;
+save_stdin($TMP_INPUT);
+
+# should use create_alignment or get_alignment
+my @gene;
+create_alignment($TMP_INPUT, \@gene, $TMP_ALIGNMENT);
+
+# raxml
+system "cat $TMP_ALIGNMENT | perl -pe 's/\\S{3}://' > $TMP_ALIGNMENT2";
+system "readseq -f 12 -o $TMP_PHYLIP $TMP_ALIGNMENT2";
+system "raxmlHPC -p 12345 -m PROTGAMMABLOSUM62 -s $TMP_PHYLIP -n $TMP_SUFFIX > /dev/null";
+# info
+my $info = "";
+$info .= `cat $TMP_INFO`;
+$info .= "\n";
+$info .= `cat $TMP_PARSIMONY_TREE`;
+$info .= "\n";
+$info .= `cat $TMP_LOG`;
+print STDERR $info;
+# result
+system "cat $TMP_RESULT";

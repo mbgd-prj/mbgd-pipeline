@@ -1,0 +1,59 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat DCLST_TABLE | $PROGRAM
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+my %domain = ();
+my %cluster = ();
+get_dclst_structure($TMP_INPUT, \%cluster, \%domain);
+
+# get seq
+my @GENE = keys %domain;
+my %SEQ = ();
+read_seq(\%SEQ, \@GENE);
+
+for my $gene (keys %domain) {
+    my @domain = sort {$a <=> $b} keys %{$domain{$gene}};
+    my $first_domain = $domain[0];
+    my $last_domain = $domain[-1];
+
+    # adjust beginning
+    if ($domain{$gene}{$first_domain}{begin} != 1) {
+	my $cluster = $domain{$gene}{$first_domain}{cluster};
+	my $begin = $domain{$gene}{$first_domain}{begin};
+	my $end = $domain{$gene}{$first_domain}{end};
+	print STDERR "ADJUSTED BEG: $cluster $gene $first_domain $begin $end -> 1\n";
+	$domain{$gene}{$first_domain}{begin} = 1;
+    }
+
+    # adjust end
+    my $length = get_gene_length(\%SEQ, $gene);
+    if ($domain{$gene}{$last_domain}{end} != $length) {
+	my $cluster = $domain{$gene}{$last_domain}{cluster};
+	my $begin = $domain{$gene}{$last_domain}{begin};
+	my $end = $domain{$gene}{$last_domain}{end};
+	print STDERR "ADJUSTED END: $cluster $gene $last_domain $begin $end -> $length\n";
+	$domain{$gene}{$last_domain}{end} = $length;
+    }
+}
+
+output_clusters(\%cluster, \%domain);

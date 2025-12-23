@@ -1,0 +1,140 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+use POSIX;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+# -e GAP_EXT
+# -o GAP_OPEN
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::General;
+use DomRefine::Score;
+use DomRefine::Refine;
+
+### Settings ###
+my %OPT;
+getopts('re:o:', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_ALIGNMENT);
+    remove_tmp_file("$TMP_ALIGNMENT.err");
+}
+
+if (defined $OPT{o}) {
+    set_open_gap_penalty($OPT{o});
+}
+if (defined $OPT{e}) {
+    set_extention_gap_penalty($OPT{e});
+}
+
+$| = 1;
+
+### Main ###
+my $start_time = time;
+
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+my %domain = ();
+my %cluster = ();
+get_dclst_structure($TMP_INPUT, \%cluster, \%domain);
+my @gene = ();
+create_alignment($TMP_INPUT, \@gene, $TMP_ALIGNMENT, region => $OPT{r});
+my %gene_idx;
+get_gene_idx(\@gene, \%gene_idx);
+my @a =();
+read_alignment($TMP_ALIGNMENT, \@a);
+my @get_pos = ();
+my @get_j = ();
+create_get_pos_from_a(\@a, \@get_pos, \@get_j);
+
+### Find boundaries ###
+
+# BUG?: not a simple procedure just to get head and tail cluster
+my %cluster_adjacency = ();
+get_adjacency_information(\%domain, \%cluster_adjacency);
+my ($HEAD_CLUSTER, $TAIL_CLUSTER) = extract_most_adjacent_cluster_pair(\%cluster_adjacency);
+if (! defined $TAIL_CLUSTER) {
+    die;
+}
+print STDERR "\ncluster_adjacency [$HEAD_CLUSTER] -> [$TAIL_CLUSTER]\n";
+if ($HEAD_CLUSTER eq $TAIL_CLUSTER) {
+    print STDERR "could not find boundary\n";
+    system "cat $TMP_INPUT";
+    my $end_time = time;
+    printf STDERR "move_boundary: %d sec\n", $end_time - $start_time;
+    exit;
+}
+
+print STDERR "get movable boundaries ...\n";
+my @gene_to_change = ();
+my @domain_to_change = ();
+my @idx_to_change = ();
+my @from_j = ();
+my @to_j = ();
+for my $gene (sort {$a cmp $b} keys %domain) {
+    my $i = $gene_idx{$gene};
+    for my $domain (keys %{$domain{$gene}}) {
+	if ($domain{$gene}{$domain-1} and
+	    $domain{$gene}{$domain-1}{cluster} eq $HEAD_CLUSTER and
+	    $domain{$gene}{$domain}{cluster} eq $TAIL_CLUSTER) {
+	    my $begin = $domain{$gene}{$domain-1}{begin} + 1;
+	    my $end = $domain{$gene}{$domain}{end};
+	    my $from_j = ${$get_j[$i]}{$begin};
+	    my $to_j = ${$get_j[$i]}{$end};
+	    push @from_j, $from_j;
+	    push @to_j, $to_j;
+	    print STDERR "$gene(", $domain-1, ",$domain) j=${from_j}..${to_j}\n";
+	    push @gene_to_change, $gene;
+	    push @domain_to_change, $domain;
+	    push @idx_to_change, $i;
+	}
+    }
+}
+
+my $from_j_max = max(@from_j);
+my $to_j_min = min(@to_j);
+print STDERR "\nsearch for the best boundary ($from_j_max <= j <= $to_j_min)\n";
+if ($from_j_max > $to_j_min) {
+    print STDERR "could not search for boundary\n";
+    system "cat $TMP_INPUT";
+    my $end_time = time;
+    printf STDERR "move_boundary: %d sec\n", $end_time - $start_time;
+    exit;
+}
+
+### Search ###
+# my $idx_to_change = join(",", @idx_to_change); # idx_to_change should be used ?
+my @head_and_tail_clusters = ($HEAD_CLUSTER, $TAIL_CLUSTER);
+my ($j_max_score, $max_score) = dsp_score_dclst(get_dclst_of_domain(\%domain), $TMP_ALIGNMENT, region => $OPT{r}, from => $from_j_max, to => $to_j_min, clusters => \@head_and_tail_clusters);
+if (! defined $max_score) {
+    print STDERR "search failed\n";
+    system "cat $TMP_INPUT";
+    my $end_time = time;
+    printf STDERR "move_boundary: %d sec\n", $end_time - $start_time;
+    exit;
+}
+print STDERR "j_max_score=$j_max_score max_score=$max_score\n\n";
+
+### Output result ###
+my ($initital_score) = dsp_score_dclst($DCLST, $TMP_ALIGNMENT, region => $OPT{r});
+print STDERR "initial score: $initital_score\n";
+if ($max_score > $initital_score) {
+    boundary_move(\@a, \%gene_idx, \%domain, \@get_pos, $j_max_score, \@gene_to_change, \@domain_to_change);
+    output_domains(\%domain);
+    print STDERR "score change: $initital_score -> $max_score (gain: ", $max_score - $initital_score ,")\n";
+} else {
+    print STDERR "could not find better boundary\n";
+    system "cat $TMP_INPUT";
+}
+
+my $end_time = time;
+printf STDERR "move_boundary: %d sec\n", $end_time - $start_time;

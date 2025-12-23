@@ -1,0 +1,66 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: $PROGRAM
+";
+
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Score;
+use DomRefine::General;
+
+### Settings ###
+my %OPT;
+getopts('tB:s:r', \%OPT);
+
+if ($OPT{B}) {
+    read_score_matrix("$ENV{DOMREFINE_DIR}/lib/BLOSUM$OPT{B}");
+}
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+my $TMP_DCLST = define_tmp_file("$PROGRAM.dclst");
+my $TMP_ALIGNMENT = define_tmp_file("$PROGRAM.alignment");
+END {
+    remove_tmp_file($TMP_INPUT);
+    remove_tmp_file($TMP_DCLST);
+    remove_tmp_file($TMP_ALIGNMENT);
+}
+
+my $SCORE_THRESHOLD = -0.5;
+if (defined $OPT{s}) {
+    $SCORE_THRESHOLD = $OPT{s};
+}
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+my @cluster = get_clusters($TMP_INPUT);
+
+for my $cluster (@cluster) {
+    my $dclst = extract_dclst($TMP_INPUT, $cluster);
+    save_contents($dclst, $TMP_DCLST);
+
+    # score for line
+    my @gene = ();
+    create_alignment($TMP_DCLST, \@gene, $TMP_ALIGNMENT, region => $OPT{r});
+    print STDERR "\[cluster $cluster\]\n";
+    my @score_for_line = dsp_score_dclst($dclst, $TMP_ALIGNMENT, lines => 1);
+    chomp(@score_for_line);
+    # print "@score_for_line\n";exit;
+
+    # select by score
+    my %selected = ();
+    for (my $i=0; $i<@gene; $i++) {
+	if ($score_for_line[$i] <= $SCORE_THRESHOLD) {
+	    print STDERR "DENOISE: ", $gene[$i], "\t", $score_for_line[$i], "\n";
+	} else {
+	    print STDERR $gene[$i], "\t", $score_for_line[$i], "\n";
+	    $selected{$gene[$i]} = 1;
+	}
+    }
+
+    print extract_dclst_by_genes($TMP_DCLST, \%selected);
+}

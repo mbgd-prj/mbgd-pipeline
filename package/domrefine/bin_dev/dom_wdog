@@ -1,0 +1,64 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat DCLST_TABLE | $PROGRAM
+-s: summary
+";
+
+use DomRefine::Read;
+
+### Settings ###
+my %OPT;
+getopts('s', \%OPT);
+
+my $TMP_INPUT = define_tmp_file("$PROGRAM.input");
+END {
+    remove_tmp_file($TMP_INPUT);
+}
+
+my $RATIO = 1;
+my $N = 5;
+
+### Main ###
+-t and die $USAGE;
+my $DCLST = save_stdin($TMP_INPUT);
+
+my %DOMAIN = ();
+my %CLUSTER = ();
+get_dclst_structure($TMP_INPUT, \%CLUSTER, \%DOMAIN);
+my %COUNT = ();
+get_cluster_count(\%COUNT, \%CLUSTER);
+
+for my $cluster (sort {$a cmp $b} keys %CLUSTER) {
+    my $count = $COUNT{$cluster};
+    my %sp = ();
+    for my $gene (keys %{$CLUSTER{$cluster}}) {
+	my ($sp, $locus) = decompose_gene_id($gene);
+	$sp{$sp}++;
+    }
+    my $n_sp = keys %sp;
+    if ($count <= $RATIO * $n_sp && $count >= $N) {
+	if ($OPT{s}) {
+	    print "$cluster $count\n";
+	    next;
+	}
+    	for my $gene (sort {$a cmp $b} keys %{$CLUSTER{$cluster}}) {
+    	    for my $domain (sort {$a <=> $b} keys %{$DOMAIN{$gene}}) {
+    		my $cluster_for_this_domain = $DOMAIN{$gene}{$domain}{cluster};
+    		my $begin = $DOMAIN{$gene}{$domain}{begin};
+    		my $end = $DOMAIN{$gene}{$domain}{end};
+    		if ($cluster_for_this_domain) {
+    		    if ($cluster_for_this_domain eq $cluster) {
+    			print "$cluster $gene $domain $begin $end\n";
+    		    }
+    		} else {
+    		    print STDERR "error: [$cluster] $gene ($domain)\n";
+    		}
+    	    }
+    	}
+
+    }
+}

@@ -1,0 +1,207 @@
+#!/usr/bin/perl -w
+use strict;
+use File::Basename;
+use Getopt::Std;
+my $PROGRAM = basename $0;
+my $USAGE=
+"Usage: cat TABOUT | $PROGRAM -l LINK DCLST_FILE
+-H: use homology data in MySQL
+-r RATIO: ratio of segment coverage by homology
+-R RATIO: ratio of homology links
+-L LINK_TESTED: resume accepting links tested
+-C CLUSTER_SET: clusterset already merged
+";
+# -a: align by region
+
+use DomRefine::General;
+use DomRefine::Read;
+use DomRefine::Align;
+use DomRefine::Score;
+use DomRefine::Refine;
+use DomRefine::Motif;
+
+### Settings ###
+my %OPT;
+getopts('l:Hr:R:aL:C:', \%OPT);
+
+my $LINK = $OPT{l} || die $USAGE;
+
+my $TMP_TO_MERGE = define_tmp_file("$PROGRAM.to_merge");
+END {
+    remove_tmp_file($TMP_TO_MERGE);
+}
+
+!@ARGV and die $USAGE;
+my ($CLUSTER_INPUT) = @ARGV;
+
+### Read homology data ###
+my ($DBH, $DBH_ACCUM) = (get_dbh("mbgd"), get_dbh("mbgd_accum")) if $OPT{H};
+my %HOM = (); # This may consume large memory
+if (! -t) {
+    my $count = 0;
+    while (<STDIN>) {
+        my @f = split;
+        if (@f != 8) {
+            next;
+        }
+        my ($gene1, $gene2, $start1, $end1, $start2, $end2, $pam, $score) = @f;
+        put_homology_in_hash(\%HOM, $gene1, $gene2, $start1, $end1, $start2, $end2, $pam, $score);
+        $count ++;
+        if ($count % 1000000 == 0) {
+            print STDERR ".";
+        }
+        if ($count % 1000000000 == 0) {
+            print STDERR "\n";
+        }
+    }
+    print STDERR "\n\n";
+}
+
+### Read clusters ###
+my %CLUSTER_MEMBERS_TXT = ();
+my %MEMBER = ();
+read_cluster_members_from_file($CLUSTER_INPUT, \%CLUSTER_MEMBERS_TXT, \%MEMBER);
+
+### Check each link ###
+my %OLD2NEW_CLUSTER = ();
+my %NEW2OLD_CLUSTER = ();
+
+if ($OPT{C}) {
+    open(CLUSTER_SET, "$OPT{C}") || die;
+    while (<CLUSTER_SET>) {
+        chomp;
+        my ($size, $clusterset) = split(/\t/, $_);
+        my @clusterset = split(/,/, $clusterset);
+        for my $cluster (@clusterset) {
+            unless ($cluster =~ /^\d+$/) {
+                print STDERR "$cluster: not integer\n";
+            }
+        }
+        my @sorted_cluster = sort { $a <=> $b } @clusterset;
+        unless (@sorted_cluster) {
+            die;
+        }
+        my $rep = $sorted_cluster[0];
+
+        for my $old (@clusterset) {
+            if ($old eq $rep) {
+                unless ($CLUSTER_MEMBERS_TXT{$rep}) {
+                    die "$rep is not included in input";
+                }
+            } else {
+                if ($CLUSTER_MEMBERS_TXT{$old}) {
+                    die "$old is included in input";
+                }
+            }
+            $OLD2NEW_CLUSTER{$old} = $rep;
+            if ($NEW2OLD_CLUSTER{$rep}) {
+                push @{$NEW2OLD_CLUSTER{$rep}}, $old;
+            } else {
+                @{$NEW2OLD_CLUSTER{$rep}} = ($old);
+            }
+        }
+    }
+    close(CLUSTER_SET) || die;
+}
+
+if ($OPT{L}) {
+    open(LINK_TESTED, "$OPT{L}") || die;
+    while (<LINK_TESTED>) {
+        chomp;
+        my @original_cluster = split(/[-,\s]/, $_);
+        print STDERR "\nMERGE_TEST: @original_cluster\n";
+        my ($flg_changed, @updated_target_cluster) = get_new_cluster_ids(\%OLD2NEW_CLUSTER, @original_cluster);
+        if (@updated_target_cluster == 2) {
+            print STDERR "MERGED: @original_cluster\n";
+            my $new_cluster_id = choose_new_cluster_id(\%CLUSTER_MEMBERS_TXT, @updated_target_cluster);
+            print STDERR "\t@updated_target_cluster -> $new_cluster_id\n";
+            update_clusters(\%CLUSTER_MEMBERS_TXT, \%MEMBER, \%OLD2NEW_CLUSTER, \%NEW2OLD_CLUSTER, @updated_target_cluster);
+        } elsif (@updated_target_cluster == 1) {
+            print STDERR "ALREADY_MERGED: @updated_target_cluster\n";
+        } else {
+            die "@original_cluster -> @updated_target_cluster";
+        }
+    }
+    close(LINK_TESTED) || die;
+}
+
+open(LINK, "$LINK") || die;
+while (<LINK>) {
+    chomp;
+    my @original_cluster = split(/[-,\s]/, $_);
+    print STDERR "\nMERGE_TEST: @original_cluster\n";
+    my ($flg_changed, @updated_target_cluster) = get_new_cluster_ids(\%OLD2NEW_CLUSTER, @original_cluster);
+
+    if (@updated_target_cluster == 2) {
+        if ($flg_changed) {
+            if (%HOM) {
+                if (check_merge_by_hom(\%MEMBER, @updated_target_cluster, \%HOM, r => $OPT{r}, R => $OPT{R}) == 0) {
+                    print STDERR "NOT_MERGED: @updated_target_cluster\n";
+                    next;
+                }
+            } elsif ($OPT{H}) {
+                if (check_merge_by_hom_mysql(\%MEMBER, @updated_target_cluster, dbh => $DBH, dbh_accum => $DBH_ACCUM, r => $OPT{r}, R => $OPT{R}) == 0) {
+                    print STDERR "NOT_MERGED: @updated_target_cluster\n";
+                    next;
+                }
+            } else {
+                if (check_merge_by_alignment(\%CLUSTER_MEMBERS_TXT, @updated_target_cluster) == 0) {
+                    print STDERR "NOT_MERGED: @updated_target_cluster\n";
+                    next;
+                }
+            }
+        }
+        print STDERR "MERGED: @original_cluster\n";
+        my $new_cluster_id = choose_new_cluster_id(\%CLUSTER_MEMBERS_TXT, @updated_target_cluster);
+        print STDERR "\t@updated_target_cluster -> $new_cluster_id\n";
+        update_clusters(\%CLUSTER_MEMBERS_TXT, \%MEMBER, \%OLD2NEW_CLUSTER, \%NEW2OLD_CLUSTER, @updated_target_cluster);
+    } elsif (@updated_target_cluster == 1) {
+        print STDERR "ALREADY_MERGED: @updated_target_cluster\n";
+    } else {
+        die "@original_cluster -> @updated_target_cluster";
+    }
+}
+close(LINK);
+
+output_cluster_members(\%CLUSTER_MEMBERS_TXT);
+
+################################################################################
+### Functions ##################################################################
+################################################################################
+
+sub check_merge_by_alignment {
+    my ($r_cluster_members_txt, $cluster1, $cluster2) = @_;
+
+    my $new_cluster_id = choose_new_cluster_id($r_cluster_members_txt, $cluster1, $cluster2);
+
+    my ($dclst, $new_dclst) = get_clusters_subset($r_cluster_members_txt, $cluster1, $cluster2);
+    $new_dclst =~ s/^(\S)/$new_cluster_id $1/gm;
+
+    incremental_alignment($dclst, $cluster1, $cluster2);
+
+    print STDERR "\n";
+    print STDERR "Score separate ..\n";
+    save_contents($dclst, $TMP_TO_MERGE);
+    my ($score_before, $n_aa) = score_c($TMP_TO_MERGE, region => $OPT{a}, stepwise_merge => 1);
+    print STDERR "\n";
+    print STDERR "Score merged ..\n";
+    my ($score, $n_seq, $n_aa2) = score_one_c($new_dclst, region => $OPT{a}, stepwise_merge => 1);
+    print STDERR "\n";
+    print STDERR "Score between..\n";
+    my ($score_between) = score_one_c($dclst, region => $OPT{a}, between => 1, stepwise_merge => 1);
+
+    my $normalized_score_change = ($score - $score_before) /($n_seq*$n_aa2);
+    print STDERR "$normalized_score_change = ($score - $score_before) /($n_seq*$n_aa2)";
+    print STDERR "\t", $score_between;
+    print STDERR "\n";
+
+    # determine
+    my $execute_merge;
+    if ($normalized_score_change >= -0.05 and $score_between > 0) {
+        $execute_merge = 1;
+    } else {
+        $execute_merge = 0;
+    }
+
+    return ($execute_merge);
+}
