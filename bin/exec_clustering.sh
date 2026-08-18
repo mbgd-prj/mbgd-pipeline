@@ -266,6 +266,8 @@ function exec_corealigner() {
 
 	echo "## Execute CoreAligner"
 
+	echo "## Execute CoreAligner"
+
 	echo "$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile"
 	$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile
 	if [ $exec_findIsland == 1 -a "$islfile" != "" ]; then
