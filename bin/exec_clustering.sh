@@ -2,15 +2,14 @@
 
 dbname=$1
 if [ "$dbname" == "" ]; then
-	echo Usage: $0 dbname
-	exit
+	dbname=query
 fi
 protfile=$dbname.fas
 qseqfile=$dbname.qseq
 genefile=$dbname.genetab
 
 # execute prokka to annotate genomes
-exec_prokka=0
+exec_prokka=1
 # reducing data size using cdhit
 exec_cdhit=0
 # refining the ortholog grouping using domrefine
@@ -88,6 +87,7 @@ function exec_prokka {
 
 	local outdir=$PROKKA_OUT/$data_name
 
+	echo "## Execute Prokka"
 	PROKKA_PATH=/usr/local
 	PROKKA_CMD=$PROKKA_PATH/bin/prokka
 	PROKKA_OPT="-species $SPECIES -genus $GENUS -compliant $ADDOPT "
@@ -141,6 +141,8 @@ function exec_cdhit {
 	local qsub_opt="-l mem=12gb,ncpus=$ncpus -W block=true"
 	local command="cd-hit -i $infile -o $qseqfile -M 5000 -T $ncpus -d 0 -p 1 $cdhit_opt"
 
+	echo "## Execute CD-Hit"
+
 	if [ "$with_pbs" == 1 ]; then
 		# for PBS
 		local command="cd-hit -i $infile -o $qseqfile -M 5000 -T \$NCPUS -d 0 -p 1 $cdhit_opt"
@@ -156,6 +158,8 @@ function exec_diamond {
 	local outdir=output_${dbname}
 	local outfile=${dbname}.homfile
 	local search_opt="--outfmt 6 --evalue 1e-10 --threads $ncpus --max-target-seqs 5000"
+
+	echo "## Execute Diamond"
 
 	if [ -s $outfile ]; then
 		return
@@ -192,13 +196,15 @@ function exec_domclust() {
 		return
 	fi
 
+	echo "## Execute DomClust"
+
 	if [ -f "$preclustfile" ]; then
 		preclustOpt="-OgeneClustFile=${preclustfile}"
 	fi
 
 	local qsub_opt="-l mem=96gb -W block=true"
 	local command=`cat<<EOF
-	$domclust_dir/src/bin/domclust ${homfile} ${genefile} -S80 -C150 -V.8 -ai.9 -ao.6 -HO -n1 -$outfmt $preclustOpt > ${clustout}.$outfmt
+	$domclust_dir/bin/domclust ${homfile} ${genefile} -S80 -C150 -V.8 -ai.9 -ao.6 -HO -n1 -$outfmt $preclustOpt > ${clustout}.$outfmt
 EOF`
 
 	if [ "$with_pbs" == 1 ]; then
@@ -217,6 +223,9 @@ function exec_domrefine() {
 	if [ -s ${domrefine_out}/cluster.domrefine.o0 ]; then
 		return
 	fi
+
+	echo "## Execute DomRefine"
+
 	mkdir -p $domrefine_out
 	pushd $domrefine_out
 	cwd=`pwd`
@@ -233,6 +242,8 @@ function exec_corealigner() {
 	local corefile=$3
 	local islfile=$4
 	COREALIGN_OPT="-ConsRatio=0.9 -NbrConsRatio=0.6 -NbrConsRatio2=0.6"
+
+	echo "## Execute CoreAligner"
 
 	echo "$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile"
 	$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile
