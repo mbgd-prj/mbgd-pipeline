@@ -79,6 +79,8 @@ while(<>){
 		$dir = ($strand eq '+') ? 1 : -1;
 		if ($name =~ /${spname}:/) {
 			$name =~ s/${spname}://;
+		} elsif ($name =~ /:/) {
+			$name =~ s/:/_/;
 		}
 
 		if ($Length{$name}) {

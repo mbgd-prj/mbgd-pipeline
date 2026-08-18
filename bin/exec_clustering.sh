@@ -2,15 +2,18 @@
 
 dbname=$1
 if [ "$dbname" == "" ]; then
-	echo Usage: $0 dbname
-	exit
+	dbname=query
 fi
 protfile=$dbname.fas
 qseqfile=$dbname.qseq
 genefile=$dbname.genetab
 
+inseq_dir=seq
+annot_dir=in_data
+species_file=$inseq_dir/species.txt
+
 # execute prokka to annotate genomes
-exec_prokka=0
+exec_prokka=1
 # reducing data size using cdhit
 exec_cdhit=0
 # refining the ortholog grouping using domrefine
@@ -53,6 +56,14 @@ aliprog=famsa
 SPECIES='H.pylori'
 GENUS='Helicobacter'
 
+function get_species {
+	local id=$1
+	SPNAME=`grep $id $species_file | cut -f2`
+	GENUS=`grep $id $species_file | cut -f3 | cut -d' ' -f1`
+	SPECIES=`grep $id $species_file | cut -f3 | cut -d' ' -f2`
+	STRAIN=`grep $id $species_file | cut -f4`
+}
+
 function exec_command_by_qsub {
 	local comm=$1
 	local qsub_opt=$2
@@ -73,7 +84,7 @@ function exec_prokka_all {
 	fi
 	for genomefile in $seqdir/*; do
 		name=`printf UG%05d $idx`
-		exec_prokka $genomefile $name $outdir
+		exec_prokka $genomefile $name $outdir 
 		let idx++
 	done
 	if [ "$with_pbs" == 1 ]; then
@@ -88,19 +99,29 @@ function exec_prokka {
 
 	local outdir=$PROKKA_OUT/$data_name
 
+	filebase=`basename $infile .fasta`
+	if [ $species_file ]; then
+		get_species $filebase
+	fi
+
+	echo "## Execute Prokka"
 	PROKKA_PATH=/usr/local
-	PROKKA_CMD=$PROKKA_PATH/bin/prokka
-	PROKKA_OPT="-species $SPECIES -genus $GENUS -compliant $ADDOPT "
+#	PROKKA_CMD=$PROKKA_PATH/bin/prokka
+	PROKKA_CMD=prokka
+#	PROKKA_OPT="--species $SPECIES --genus $GENUS --compliant $ADDOPT "
+	PROKKA_OPT="--species '$SPECIES' --genus '$GENUS' $ADDOPT "
+	if [ "$STRAIN" != "" ]; then
+		PROKKA_OPT="--strain '$STRAIN'"
+	fi
 	if [ "$PROKKA_OUT" == "" ]; then
 		PROKKA_OUT="prokka"
 	fi
 
-	strain=`basename $infile .fasta`
-	spname=$strain
+	spname=$SPNAME
 	if [ -f "$outdir/$spname.faa" ]; then
 		return
 	fi
-	PROKKA_OPT="$PROKKA_OPT --strain '$strain' --outdir $outdir --pref $spname --locustag '$spname:$data_name'"
+	PROKKA_OPT="$PROKKA_OPT --strain '$strain' --outdir $outdir --pref $spname --locustag '$data_name'"
 #	echo $PROKKA_CMD $PROKKA_OPT $infile
 # 	for PBS
 	if [ "$with_pbs" == 1 ]; then
@@ -141,6 +162,8 @@ function exec_cdhit {
 	local qsub_opt="-l mem=12gb,ncpus=$ncpus -W block=true"
 	local command="cd-hit -i $infile -o $qseqfile -M 5000 -T $ncpus -d 0 -p 1 $cdhit_opt"
 
+	echo "## Execute CD-Hit"
+
 	if [ "$with_pbs" == 1 ]; then
 		# for PBS
 		local command="cd-hit -i $infile -o $qseqfile -M 5000 -T \$NCPUS -d 0 -p 1 $cdhit_opt"
@@ -156,6 +179,8 @@ function exec_diamond {
 	local outdir=output_${dbname}
 	local outfile=${dbname}.homfile
 	local search_opt="--outfmt 6 --evalue 1e-10 --threads $ncpus --max-target-seqs 5000"
+
+	echo "## Execute Diamond"
 
 	if [ -s $outfile ]; then
 		return
@@ -192,13 +217,15 @@ function exec_domclust() {
 		return
 	fi
 
+	echo "## Execute DomClust"
+
 	if [ -f "$preclustfile" ]; then
 		preclustOpt="-OgeneClustFile=${preclustfile}"
 	fi
 
 	local qsub_opt="-l mem=96gb -W block=true"
 	local command=`cat<<EOF
-	$domclust_dir/src/bin/domclust ${homfile} ${genefile} -S80 -C150 -V.8 -ai.9 -ao.6 -HO -n1 -$outfmt $preclustOpt > ${clustout}.$outfmt
+	$domclust_dir/bin/domclust ${homfile} ${genefile} -S80 -C150 -V.8 -ai.9 -ao.6 -HO -n1 -$outfmt $preclustOpt > ${clustout}.$outfmt
 EOF`
 
 	if [ "$with_pbs" == 1 ]; then
@@ -217,6 +244,9 @@ function exec_domrefine() {
 	if [ -s ${domrefine_out}/cluster.domrefine.o0 ]; then
 		return
 	fi
+
+	echo "## Execute DomRefine"
+
 	mkdir -p $domrefine_out
 	pushd $domrefine_out
 	cwd=`pwd`
@@ -232,7 +262,9 @@ function exec_corealigner() {
 	local genefile=$2
 	local corefile=$3
 	local islfile=$4
-	COREALIGN_OPT="-ConsRatio=0.9 -NbrConsRatio=0.6 -NbrConsRatio2=0.6"
+#	COREALIGN_OPT="-ConsRatio=0.9 -NbrConsRatio=0.6 -NbrConsRatio2=0.6"
+
+	echo "## Execute CoreAligner"
 
 	echo "$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile"
 	$bindir/corealign $COREALIGN_OPT -domclustIn $clustfile $genefile > $corefile
@@ -242,10 +274,9 @@ function exec_corealigner() {
 	fi
 }
 
-annot_dir=in_data
 # to create annotated data by Prokka
 if [ "$exec_prokka" == 1 ]; then
-	exec_prokka_all seq $annot_dir
+	exec_prokka_all $inseq_dir $annot_dir
 else
 	mkdir -p $annot_dir
 fi
