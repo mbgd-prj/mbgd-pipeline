@@ -13,7 +13,7 @@ annot_dir=in_data
 species_file=$inseq_dir/species.txt
 
 # execute prokka to annotate genomes
-exec_prokka=1
+exec_prokka=0
 # reducing data size using cdhit
 exec_cdhit=0
 # refining the ortholog grouping using domrefine

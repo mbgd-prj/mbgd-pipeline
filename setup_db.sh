@@ -2,6 +2,6 @@
 # install database
 mkdir -p db
 cd db
-current_ver=`curl https://mbgd.nibb.ac.jp/dist/current`
-curl -O https://mbgd.nibb.ac.jp/dist/${current_ver}/mbgd_prof.tgz 
+latest_rel=`curl https://mbgd.nibb.ac.jp/dist/latest_rel`
+curl -O https://mbgd.nibb.ac.jp/dist/${latest_rel}/${latest_rel}_prof.tgz 
 tar xvfz mbgd_prof.tgz
