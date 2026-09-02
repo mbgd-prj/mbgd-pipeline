@@ -1,8 +1,10 @@
 #!/usr/bin/perl -s
 
 use LWP::Simple;
+use HTTP::Tiny;
 use JSON;
 use File::Path qw( make_path remove_tree );
+use Time::HiRes qw( sleep );
 
 $MBGDAPI = "https://mbgdapi.nibb.ac.jp";
 
@@ -55,18 +57,18 @@ sub output_all {
 	       	print GENETAB "\torgname:$genome->{orgname}" if ($genome->{orgname});;
 	       	print GENETAB "\tstrain:$genome->{strain}" if ($genome->{strain});;
 		print GENETAB "\n";
-	
+
 		my($chromInfo) = &get_data($sp, 'chromosome');
 		my($geneInfo) = &get_data($sp, 'gene');
 		my(@chroms);
-	
+
 		foreach $c ( @{$chromInfo} ) {
 			push(@chroms, $c);
 		}
 		@chroms = sort {$a->{seqno} <=> $b->{seqno}} @chroms;
 		my(@genes);
 		my($hash_genetab) = {};
-	
+
 		foreach $g ( @{$geneInfo} ) {
 			if ($g->{type} eq 'CDS') {
 				# output only when the gene is preset in protseq
@@ -115,6 +117,31 @@ sub get_proteinseq {
 }
 sub get_data {
 	my($sp, $type) = @_;
-	$content = get("$MBGDAPI/$type/$sp");
-	decode_json($content);
+	my $url = "$MBGDAPI/$type/$sp";
+
+	sleep(0.3);
+
+	my $http = HTTP::Tiny->new(timeout => 15);
+	my $max_retries = 3;
+	my $response;
+
+	for my $attempt (1 .. $max_retries) {
+		$response = $http->get($url);
+
+		last if $response->{success};
+
+		warn "Attempt $attempt failed for $url: $response->{status} $response->{reason}. Retrying...\n";
+		sleep(1);
+	}
+
+	unless ($response->{success}) {
+		die "HTTP Error fetching $url: Status $response->{status} - $response->{reason}\n";
+	}
+
+	my $data = eval { decode_json($response->{content}) };
+	if ($@) {
+		die "JSON Parse Error for $url: $@\nResponse content was:\n$response->{content}\n";
+	}
+
+	return $data;
 }
